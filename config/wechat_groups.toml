@@ -12,7 +12,7 @@ reply_to_staff_when_mentioned = true
 #   model = 每个需求由模型现写一句，措辞不重复、更像真人（默认，与改动前行为一致）
 #   fixed = 统一使用下面的 soothe_fixed_reply，措辞完全可控、不消耗模型调用
 # 切换方式：改本文件即热加载，下一跳消息生效，无需重启。详见 docs/配置项速查.md「安抚话术」。
-soothe_mode = "model"
+soothe_mode = "fixed"
 soothe_fixed_reply = "收到，我们加急处理"
 
 [[groups]]
@@ -28,3 +28,15 @@ owner_id = "wxid_2i863b4r6r3y22"
 bot_aliases = []
 reply_to_staff_when_mentioned = true
 
+[[groups]]
+group_id = "46079713295@chatroom"
+group_name = "Y0051-瀚思品牌-袋鼠对接群"
+mode = "active"
+require_customer_mention = false
+allow_images = true
+allow_files = true
+owner_id = "25984982227427603@openim"
+# LangBot 的实际配置未保存机器人昵称；解析器同时支持 GeWe 的显式 @ 用户字段，
+# 且对名单内客服的“@某人”消息提供兼容兜底。确认机器人昵称后可在此补充别名。
+bot_aliases = []
+reply_to_staff_when_mentioned = true
