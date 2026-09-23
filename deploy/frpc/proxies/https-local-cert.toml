@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+#  走法 B：TLS 在本机（frpc）终结 —— 本机服务是纯 HTTP，靠 https2http 插件转换
+#
+#  链路：
+#    GeWe --https:443--> frps(vhostHTTPSPort, 按 SNI 路由) --加密隧道--> frpc
+#         --TLS 在本机终结(用下面 crtPath/keyPath)--> http://127.0.0.1:__LOCAL_PORT__
+#
+#  前提：frps 必须**独占 443**（vhostHTTPSPort = 443）。服务器上若有 OpenResty/Nginx
+#  占着 443，就走走法 A，不要用本文件。
+# ---------------------------------------------------------------------------
+[[proxies]]
+name = "hsai-kefu-5330"
+type = "https"
+customDomains = ["__DOMAIN__"]        # 必须是完整域名；须已解析到 frps 服务器 IP
+
+# ⚠️ 代理级配置必须写在 [proxies.plugin] 之前。TOML 的规则是：一旦出现表头，
+#    后续的键就归属该表 —— healthCheck 写在插件表下面会被当成插件字段，
+#    报 `unknown field "healthCheck"` 直接启动失败。
+healthCheck.type = "http"
+healthCheck.path = "/health"
+healthCheck.intervalSeconds = 10
+healthCheck.timeoutSeconds = 3
+healthCheck.maxFailed = 3
+
+[proxies.plugin]
+type = "https2http"
+localAddr = "127.0.0.1:__LOCAL_PORT__"
+crtPath = "__CERT_CRT__"              # ⚠️ 字段名必须 crtPath / keyPath
+keyPath = "__CERT_KEY__"              #    写成 crt / key 会报 unknown field 直接启动失败
+
+# ⚠️ 不要设置 hostHeaderRewrite。
+# 应用侧会用 observe_public_origin() 从 Host / X-Forwarded-Host + X-Forwarded-Proto
+# 学习公网 origin，用来拼微信附件外链。把 Host 改成 127.0.0.1 会让附件链接变成
+# localhost，代码里的安全兜底会直接忽略它 → 附件静默发不出去。
+requestHeaders.set."X-Forwarded-Proto" = "https"
+requestHeaders.set."X-Forwarded-Host" = "__DOMAIN__"

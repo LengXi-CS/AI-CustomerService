@@ -1,0 +1,58 @@
+# ============================================================================
+#  frps 服务端 —— 部署在有公网 IP、并已装 1Panel 的服务器上
+#
+#  与官方示例的差别（本机 80/443 已被 1Panel 的 OpenResty 占用）：
+#    · 删掉 80 / 443 映射  → 改成 127.0.0.1:8080 只对本机开放，给 OpenResty 反代用
+#    · Dashboard 7500      → 只绑 127.0.0.1，公网访问不到
+#    · allowPorts 收窄     → 端口段只留 6080
+#  ⚠️ 8080 **不要**在云安全组里放行 —— 它只该被本机的 OpenResty 访问。
+#
+#  启动：cp .env.example .env  →  编辑 .env  →  docker compose up -d
+# ============================================================================
+services:
+  frps:
+    image: fatedier/frps:v0.71.0
+    container_name: frps
+    restart: unless-stopped
+    command: ["-c", "/etc/frp/frps.toml"]
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 下面三个变量被 frps.toml 里的 {{ .Envs.XXX }} 模板引用
+      FRP_TOKEN: ${FRP_TOKEN:?请先在 .env 中设置 FRP_TOKEN}
+      FRP_DASHBOARD_USER: ${FRP_DASHBOARD_USER:-admin}
+      FRP_DASHBOARD_PWD: ${FRP_DASHBOARD_PWD:?请先在 .env 中设置 FRP_DASHBOARD_PWD}
+
+    ports:
+      # frpc 接入（控制通道）—— 必须公网可达
+      - "7000:7000/tcp"
+      # KCP 传输（走 UDP），不用 KCP 可以删掉
+      - "7000:7000/udp"
+      # Dashboard —— 只绑本机，公网访问不到
+      - "127.0.0.1:7500:7500/tcp"
+      # HTTP 域名穿透入口 —— 只给本机 OpenResty 反代，不对公网暴露
+      # ⚠️ 如果 1Panel 站点反代报 502，说明 OpenResty 不是 host 网络，
+      #    把这里改成 "0.0.0.0:8080:8080/tcp"，并在反代里填宿主机 IP（或 172.17.0.1）
+      #    然后**务必确认云安全组没有放行 8080**。
+      - "127.0.0.1:8080:8080/tcp"
+      # 诊断用 TCP 端口段（与 frps.toml 的 allowPorts 保持一致）。不需要就删掉。
+      - "6080:6080/tcp"
+
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "/usr/bin/frps", "verify", "-c", "/etc/frp/frps.toml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

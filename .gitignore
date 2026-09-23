@@ -1,0 +1,54 @@
+# Environment & Secrets
+.env
+*.env
+*.pem
+*.key
+
+# Python & Virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Testing & Tools
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime Data
+data/
+logs/
+*.log
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+
+# Docker persistence
+deploy/fastgpt/mongo/
+deploy/fastgpt/pg/
+deploy/fastgpt/data/
+
+# Large binaries / installers (超出 GitHub 单文件 100MB 限制)
+*.msi
+*.exe
+frc配置/
+gewe-AidNet-win64.exe_*/
+
+# 会话临时产物
+/_*.txt
+
+# OS specific
+Thumbs.db
+.DS_Store
+
+# IDE & Agent Caches
+.workbuddy/
+.kilo/
+.codex-remote-attachments/
+.vscode/
+.idea/

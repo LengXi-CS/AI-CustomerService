@@ -1,0 +1,75 @@
+# ============================================================================
+#  frps.toml —— frp 服务端（S 端），**已按 1Panel 环境改造**
+#
+#  与原始版本的差别（原因：这台服务器上 1Panel 的 OpenResty 占用了 80/443）：
+#    1) vhostHTTPPort = 8080        （原来是 80 → 会和 OpenResty 抢端口，容器起不来）
+#    2) 不配置 vhostHTTPSPort       （443 被 OpenResty 占用；HTTPS 由 1Panel 站点的证书终结）
+#    3) allowPorts 收窄到 6080-6081 （原来 6000-6100 要在 docker 里映射 202 个端口，纯浪费；
+#                                    且 C 端用 http 类型代理时**根本不需要**任何端口段）
+#    4) webServer.addr = 127.0.0.1  （Dashboard 不对公网暴露）
+#
+#  数据流：
+#    GeWe --https:443--> 1Panel OpenResty(证书在这) --http--> 127.0.0.1:8080
+#         --> frps(vhostHTTPPort) --加密隧道:7000--> frpc(你本机) --> http://127.0.0.1:5330
+# ============================================================================
+
+# ---------------------------- 1. 接入地址 ----------------------------
+bindAddr = "0.0.0.0"
+# frpc 通过这个 TCP 端口连上来
+bindPort = 7000
+# KCP 是 UDP 版传输，弱网/丢包环境下比 TCP 快；与 bindPort 数值相同不冲突
+kcpBindPort = 7000
+
+# ---------------------------- 2. Web 域名穿透 ----------------------------
+# ⚠️ 必须用 8080：80 已被 1Panel 的 OpenResty 占用，写 80 会导致 docker 端口映射失败
+#    （port is already allocated），frps 容器反复重启起不来。
+vhostHTTPPort = 8080
+# 不配 vhostHTTPSPort：443 归 OpenResty，TLS 在 1Panel 站点上终结，frp 只跑明文 http。
+# 若以后要让 frp 自己终结 TLS，需先把 OpenResty 的 HTTPS 端口挪走再解开下面这行。
+# vhostHTTPSPort = 443
+vhostHTTPTimeout = 60
+
+# ---------------------------- 3. 鉴权（客户端准入） ----------------------------
+auth.method = "token"
+# 由 .env 注入，不落盘明文
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+# 心跳与新建工作连接也携带鉴权信息，避免被中间人探测/伪造。
+# ⚠️ C 端 frpc.toml 必须写一模一样的值，否则连上几秒后会被踢（heartbeat authentication failed）
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
+
+# ---------------------------- 4. 传输层 ----------------------------
+# true = 只接受 TLS 加密的连接（frpc v0.50+ 默认就开启 TLS，这里强制要求）
+transport.tls.force = true
+transport.maxPoolCount = 5
+
+# ---------------------------- 5. 端口权限控制 ----------------------------
+# 只保留一个"诊断用"的 TCP 端口段，用来在证书/反代没就绪时单独验证隧道通不通。
+# 不需要就删掉，并把 docker-compose.yml 里的 6080 映射一起去掉。
+# 注意：C 端用 type="http" 或 "https" 的代理**不消耗**这里的端口，只有 tcp/udp 代理才需要。
+allowPorts = [
+  { start = 6080, end = 6081 }
+]
+maxPortsPerClient = 5
+
+# ---------------------------- 6. Dashboard / 监控 ----------------------------
+# 只监听本机：公网访问不到。
+# 要看就 SSH 隧道：ssh -L 7500:127.0.0.1:7500 root@<服务器IP>，然后本地开 http://127.0.0.1:7500
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "{{ .Envs.FRP_DASHBOARD_USER }}"
+webServer.password = "{{ .Envs.FRP_DASHBOARD_PWD }}"
+enablePrometheus = false
+
+# ---------------------------- 7. 日志与其它 ----------------------------
+log.to = "console"
+log.level = "info"
+log.maxDays = 3
+
+# 不把内部错误的细节回传给客户端
+detailedErrorsToClient = false
+
+# UDP 代理的单包大小，两端必须一致
+udpPacketSize = 1500
+
+# NAT 打洞（xtcp）分析数据保留时长
+natholeAnalysisDataReserveHours = 168

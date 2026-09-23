@@ -1,0 +1,21 @@
+{
+  "feConfigs": {
+    "mcpServerProxyEndpoint": ""
+  },
+  "systemEnv": {
+    "datasetParseMaxProcess": 10,
+    "vectorMaxProcess": 10,
+    "qaMaxProcess": 10,
+    "vlmMaxProcess": 10,
+    "hnswEfSearch": 100,
+    "hnswMaxScanTuples": 100000,
+    "customPdfParse": {
+      "url": "",
+      "key": "",
+      "doc2xKey": "",
+      "textinAppId": "",
+      "textinSecretCode": "",
+      "price": 0
+    }
+  }
+}

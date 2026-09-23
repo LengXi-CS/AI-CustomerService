@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+#  走法 A：TLS 由服务器侧的 OpenResty（1Panel 的反向代理站点）终结
+#
+#  链路：
+#    GeWe --https:443--> 1Panel OpenResty(证书在这里) --http--> 127.0.0.1:8080
+#         --> frps(vhostHTTPPort) --加密隧道--> frpc --> http://127.0.0.1:__LOCAL_PORT__
+#
+#  本机**不需要证书**，也不要用 https2http 插件。
+#  frps 侧必须把 vhostHTTPPort 改成 8080（不能是 80，被 OpenResty 占了）。
+# ---------------------------------------------------------------------------
+[[proxies]]
+name = "hsai-kefu-5330"
+type = "http"                         # 明文 http 代理，靠 Host 匹配 customDomains
+localIP = "127.0.0.1"
+localPort = __LOCAL_PORT__
+customDomains = ["__DOMAIN__"]        # 必须与 1Panel 站点绑定的域名完全一致
+
+healthCheck.type = "http"
+healthCheck.path = "/health"
+healthCheck.intervalSeconds = 10
+healthCheck.timeoutSeconds = 3
+healthCheck.maxFailed = 3
+
+# ⚠️ Host 头必须由 OpenResty 原样透传（1Panel 反代默认就是 proxy_set_header Host $host;）。
+#    任何一层把 Host 改成 127.0.0.1，frps 都匹配不到 customDomains，会直接返回 404。
+#    建议在 1Panel 反代配置里确保有：
+#      proxy_set_header Host $host;
+#      proxy_set_header X-Forwarded-Proto $scheme;
+#      proxy_set_header X-Forwarded-Host $host;

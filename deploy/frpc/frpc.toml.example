@@ -1,0 +1,71 @@
+# ============================================================================
+#  frpc 客户端配置模板（C 端 / 本机 Windows）
+#
+#  本文件是**模板**，占位符由 scripts/setup_frpc.ps1 渲染后写到 D:\tools\frp\frpc.toml。
+#  ⚠️ 实例化后的 frpc.toml 含 auth.token，不要提交到 git、不要贴进聊天记录。
+#
+#  【业务代理段不在这里】—— 文件末尾有一行占位标记，由脚本按 PROXY_MODE 整段替换：
+#    PROXY_MODE=http   → deploy/frpc/proxies/http-behind-proxy.toml（TLS 在服务器 OpenResty，本机无证书）
+#    PROXY_MODE=https  → deploy/frpc/proxies/https-local-cert.toml（TLS 在本机，用证书）
+#  ⚠️ 占位标记的字符串只允许在主模板里出现一次（脚本会断言次数）——注释里也不要再写出它，
+#     否则 Replace 会把代理段注入到注释中间，TOML 结构整体错位。
+#
+#  已按对端 S 端配置（frc配置/frc配置/server/）核对，约束如下：
+#    · server/frps.toml  bindPort=7000
+#    · auth.method="token" 且 additionalScopes=["HeartBeats","NewWorkConns"]  → 本文件必须镜像，
+#      否则 frps 会以 "heartbeat authentication failed" 断开（现象是连上后几秒掉线）
+#    · transport.tls.force=true                                               → 本文件必须 transport.tls.enable=true
+#    · allowPorts = [6000,6100]                                                → 任何 tcp/udp 代理的 remotePort
+#                                                                                必须落在 6000-6100，否则报 port not allowed
+#    · 未配置 subDomainHost                                                    → 只能用完整 customDomains
+#    · maxPortsPerClient = 10
+#    · 版本 fatedier/frps:v0.71.0                                              → 本机 frpc 亦为 0.71.0
+# ============================================================================
+
+serverAddr = "__SERVER_ADDR__"        # frps 所在公网服务器的域名或 IP（不带 http:// 和端口）
+serverPort = __SERVER_PORT__          # frps 的 bindPort，默认 7000
+loginFailExit = false                 # 首次登录失败不退出进程，由 NSSM 与本进程自身持续重试
+
+# 本客户端标识：同一 frps 下的多个客户端不能重名，否则代理互相覆盖
+user = "__FRP_USER__"
+clientID = "__FRP_USER__"
+
+transport.protocol = "tcp"            # 弱网/被 QoS 时可换 "kcp"（需 frps 也开 kcpBindPort，本端已开 7000）
+transport.tls.enable = true           # 必开：对端 transport.tls.force = true
+transport.heartbeatInterval = 30
+transport.heartbeatTimeout = 90
+
+auth.method = "token"
+auth.token = "__TOKEN__"
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]   # 必须与 frps 一致
+
+# 本机管理接口：frpc reload 热加载配置用（127.0.0.1:7400）
+webServer.addr = "127.0.0.1"
+webServer.port = 7400
+webServer.user = "admin"
+webServer.password = "__ADMIN_PWD__"
+
+log.to = "__LOG_FILE__"
+log.level = "info"
+log.maxDays = 7
+
+# ---------------------------------------------------------------------------
+# 可选：排障用的 TCP 直映射（默认关闭）
+# 用途：证书 / DNS / 反代还没就绪时，先用 http://<服务器IP>:<端口>/health 单独验证
+#       "隧道通不通"，把"隧道问题"和"证书/反代问题"分开定位。
+# ⚠️ remotePort 必须落在 frps 的 allowPorts 区间 6000-6100，否则报 port not allowed。
+# 代价：多开一个公网端口。验证完请注释掉，并在安全组里关掉对应端口。
+#
+# [[proxies]]
+# name = "hsai-kefu-5330-diag"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 5330
+# remotePort = 6080
+# transport.useEncryption = true
+# ---------------------------------------------------------------------------
+
+# ============================================================================
+#  业务代理（由脚本按 PROXY_MODE 注入，见 deploy/frpc/proxies/）
+# ============================================================================
+__PROXY_BLOCK__
