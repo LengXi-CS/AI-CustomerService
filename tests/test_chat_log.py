@@ -11,7 +11,9 @@ Two contracts are under test here, and the second one is the important one:
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +24,7 @@ from fastgpt_assistant.core.models import Deliverable
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
 from fastgpt_assistant.orchestration.engine import (
     AssistantEngine,
+    DispatchOutcome,
     InboundEvent,
     ReplyDeliverable,
 )
@@ -185,19 +188,20 @@ def test_a_database_failure_is_swallowed_not_raised(tmp_path: Path) -> None:
 
 def test_list_messages_pages_forward_for_incremental_replay(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    row_ids = [
+    for index in range(3):
         store.record(_entry(message_id=f"msg-{index}", text=f"第 {index} 条"))
-        for index in range(3)
-    ]
 
     first_page = store.list_messages(ROOM, limit=2)
-    second_page = store.list_messages(ROOM, after_id=row_ids[1] or 0, limit=2)
+    # A viewer pages with the id of the last row it rendered, read off the row
+    # itself — not off the write-time return value.
+    second_page = store.list_messages(ROOM, after_id=first_page[-1].id, limit=2)
 
     assert [row.text for row in first_page] == ["第 0 条", "第 1 条"]
+    assert first_page[-1].id > first_page[0].id > 0
     # Keyset paging on the autoincrement id: a viewer that polls with the last id
     # it rendered re-sees nothing and skips nothing.
     assert [row.text for row in second_page] == ["第 2 条"]
-    assert store.list_messages(ROOM, after_id=row_ids[2] or 0) == []
+    assert store.list_messages(ROOM, after_id=second_page[-1].id) == []
 
 
 def test_summarize_reports_one_line_per_chat(tmp_path: Path) -> None:
@@ -216,12 +220,26 @@ def test_as_dict_is_json_ready_for_a_frontend(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.record(_entry(metadata={"mentions": ["AI客服"]}))
 
-    payload = store.recent()[0].as_dict()
+    row = store.recent()[0]
+    payload = row.as_dict()
 
+    assert payload["id"] == row.id > 0
     assert payload["sender_role"] == "customer"
     assert payload["metadata"] == {"mentions": ["AI客服"]}
     assert isinstance(payload["occurred_at"], str)
+    assert isinstance(payload["recorded_at"], str) and payload["recorded_at"]
     assert set(payload) >= {"chat_id", "direction", "kind", "text", "quoted_msg_id"}
+    json.dumps(payload)  # the whole payload must survive a JSON round-trip
+
+
+def test_as_dict_normalizes_a_datetime_occurred_at(tmp_path: Path) -> None:
+    """Callers build entries with datetimes; the export must still be JSON-ready."""
+    entry = _entry(occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC))
+
+    payload = entry.as_dict()
+
+    assert payload["occurred_at"] == "2026-09-23T12:00:00+00:00"
+    json.dumps(payload)
 
 
 @pytest.mark.parametrize(
@@ -420,6 +438,87 @@ def test_an_empty_reply_writes_no_row(tmp_path: Path) -> None:
     )
 
     assert engine.chat_log.count() == 0
+
+
+def test_a_failed_text_send_leaves_no_bubble(tmp_path: Path) -> None:
+    """dispatch_outbound never raises, so only the outcome says what was sent."""
+    engine = _engine(tmp_path)
+    reply = ReplyDeliverable(text="这条其实没发出去", channel_used="direct")
+
+    engine.log_group_outbound(
+        to_wxid=ROOM,
+        reply=reply,
+        outcome=DispatchOutcome(sent_text=False),
+    )
+
+    assert engine.chat_log.count() == 0
+
+
+def test_only_the_attachments_actually_sent_are_archived(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    reply = ReplyDeliverable(
+        text="检测报告",
+        channel_used="structured",
+        deliverables=[
+            Deliverable(media_id="media-ok", filename="报告A.pdf"),
+            Deliverable(media_id="media-lost", filename="报告B.pdf"),
+        ],
+    )
+
+    engine.log_group_outbound(
+        to_wxid=ROOM,
+        reply=reply,
+        outcome=DispatchOutcome(sent_text=True, sent_media_ids=("media-ok",)),
+    )
+
+    rows = engine.chat_log.recent()
+    assert [row.kind for row in rows] == ["text", "file"]
+    assert rows[1].media_ref == "media-ok"
+
+
+def test_a_suppressed_reply_writes_nothing(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    reply = ReplyDeliverable(text="", channel_used="silent", suppress_outbound=True)
+
+    engine.log_group_outbound(
+        to_wxid=ROOM,
+        reply=reply,
+        outcome=DispatchOutcome(suppressed=True),
+    )
+
+    assert engine.chat_log.count() == 0
+
+
+def test_dispatch_outbound_reports_exactly_what_it_sent(tmp_path: Path) -> None:
+    """The outcome must follow the send calls, not the reply's intent."""
+    engine = _engine(tmp_path)
+    calls: list[str] = []
+
+    class _PartialWechat:
+        def send_text(self, *, to_wxid: str, content: str) -> None:
+            calls.append("text")
+
+        def send_file(self, *, to_wxid: str, file_url: str, file_name: str) -> None:
+            calls.append(f"file:{file_name}")
+            if file_name == "报告B.pdf":
+                raise RuntimeError("gewe timeout")
+
+    engine.wechat = _PartialWechat()
+    reply = ReplyDeliverable(
+        text="检测报告",
+        channel_used="structured",
+        deliverables=[
+            Deliverable(media_id="a", filename="报告A.pdf", download_url="https://x/a"),
+            Deliverable(media_id="b", filename="报告B.pdf", download_url="https://x/b"),
+            Deliverable(media_id="c", filename="报告C.pdf"),  # no URL: never attempted
+        ],
+    )
+
+    outcome = engine.dispatch_outbound(ROOM, reply)
+
+    assert outcome.sent_text is True
+    assert outcome.sent_media_ids == ("a",)
+    assert calls == ["text", "file:报告A.pdf", "file:报告B.pdf"]
 
 
 class _BrokenStore(ChatLogStore):

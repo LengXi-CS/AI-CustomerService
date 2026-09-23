@@ -137,10 +137,15 @@ class ChatLogEntry:
     task_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     occurred_at: datetime | str | None = None
+    # Populated only on rows read back from the store; the autoincrement id is
+    # the keyset cursor a frontend passes back as ``after_id`` when paging.
+    id: int = 0
+    recorded_at: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """JSON-ready view of one row for a frontend or an export job."""
         return {
+            "id": self.id,
             "chat_id": self.chat_id,
             "chat_name": self.chat_name,
             "message_id": self.message_id,
@@ -161,7 +166,10 @@ class ChatLogEntry:
             "channel_used": self.channel_used,
             "task_id": self.task_id,
             "metadata": dict(self.metadata),
-            "occurred_at": self.occurred_at,
+            # Normalized so the payload is JSON-serializable even for an entry
+            # built by a caller with a datetime, not just rows read back.
+            "occurred_at": iso_timestamp(self.occurred_at),
+            "recorded_at": self.recorded_at,
         }
 
 
@@ -325,6 +333,7 @@ class ChatLogStore:
         if not isinstance(metadata, dict):
             metadata = {"_malformed": metadata}
         return ChatLogEntry(
+            id=int(row["id"]),
             chat_id=str(row["chat_id"]),
             chat_name=str(row["chat_name"]),
             direction=str(row["direction"]),  # type: ignore[arg-type]
@@ -346,6 +355,7 @@ class ChatLogStore:
             task_id=str(row["task_id"]),
             metadata=metadata,
             occurred_at=str(row["occurred_at"]),
+            recorded_at=str(row["recorded_at"]),
         )
 
     def count(self, chat_id: str | None = None) -> int:

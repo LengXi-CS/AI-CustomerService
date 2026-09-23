@@ -251,7 +251,7 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
         if not route.shadow:
             # Blocking GeWe sends and the inter-attachment pause run off the event
             # loop so the conversation poller keeps making progress.
-            await asyncio.to_thread(
+            outcome = await asyncio.to_thread(
                 engine.dispatch_outbound,
                 to_wxid=event.chat_id,
                 reply=reply,
@@ -260,6 +260,7 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
                 to_wxid=event.chat_id,
                 reply=reply,
                 task_id=staff_task_id,
+                outcome=outcome,
             )
             if staff_task_id:
                 engine.conversation_state.set_state(staff_task_id, "responded")

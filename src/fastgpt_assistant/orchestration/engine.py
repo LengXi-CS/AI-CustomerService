@@ -195,6 +195,23 @@ class ReplyDeliverable:
     owner_notify_text: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class DispatchOutcome:
+    """What one :meth:`AssistantEngine.dispatch_outbound` call actually delivered.
+
+    ``dispatch_outbound`` never raises — each send is individually best-effort —
+    so "the call returned" says nothing about whether the customer saw anything.
+    The group chat archive must not record bubbles the group never received,
+    hence this honest receipt: ``sent_text`` is True only when the text send did
+    not raise, and ``sent_media_ids`` holds exactly the attachments whose send
+    did not raise. ``suppressed`` marks a reply that was intentionally not sent.
+    """
+
+    sent_text: bool = False
+    sent_media_ids: tuple[str, ...] = ()
+    suppressed: bool = False
+
+
 def dedupe_deliverables(deliverables: list[Deliverable]) -> list[Deliverable]:
     """Drop repeated attachments, keeping first-seen order.
 
@@ -588,14 +605,22 @@ class AssistantEngine:
         to_wxid: str,
         reply: ReplyDeliverable,
         task_id: str = "",
+        outcome: DispatchOutcome | None = None,
     ) -> None:
         """Archive what the bot actually sent into a configured group.
 
-        Only called **after** a dispatch that did not raise, and only for a
-        configured group: a shadow-mode reply was never sent and a private owner
-        reminder belongs to a different chat, so neither appears here. The
-        archive therefore stays a record of the group's real conversation rather
-        than of what the bot intended.
+        Only called for a configured group after a dispatch, and — when the
+        caller passes the :class:`DispatchOutcome` — only the pieces that
+        dispatch actually handed to GeWe are written: a text send that raised,
+        or an attachment with no public URL, leaves **no** row. A shadow-mode
+        reply was never sent and a private owner reminder belongs to a
+        different chat, so neither appears here either. The archive therefore
+        stays a record of the group's real conversation rather than of what
+        the bot intended.
+
+        ``outcome=None`` means the caller did not track the dispatch (a test
+        stub, for instance); in that case every part of the reply is recorded,
+        matching the behaviour this method had before outcomes existed.
         """
         store = getattr(self, "chat_log", None)
         if store is None or not store.enabled or not to_wxid.endswith("@chatroom"):
@@ -611,7 +636,7 @@ class AssistantEngine:
             # thing that breaks a working reply.
             sender_id = getattr(self.settings, "gewe_app_id", "") or "assistant"
             entries: list[ChatLogEntry] = []
-            if reply.text.strip():
+            if reply.text.strip() and (outcome is None or outcome.sent_text):
                 entries.append(
                     ChatLogEntry(
                         chat_id=to_wxid,
@@ -628,6 +653,8 @@ class AssistantEngine:
                     )
                 )
             for deliverable in dedupe_deliverables(reply.deliverables):
+                if outcome is not None and deliverable.media_id not in outcome.sent_media_ids:
+                    continue
                 entries.append(
                     ChatLogEntry(
                         chat_id=to_wxid,
@@ -935,9 +962,9 @@ class AssistantEngine:
                 return
             policy = self.groups_config.get(task.chat_id)
             if policy is not None and policy.mode != "shadow":
-                self.dispatch_outbound(to_wxid=task.chat_id, reply=reply)
+                outcome = self.dispatch_outbound(to_wxid=task.chat_id, reply=reply)
                 self.log_group_outbound(
-                    to_wxid=task.chat_id, reply=reply, task_id=task.task_id
+                    to_wxid=task.chat_id, reply=reply, task_id=task.task_id, outcome=outcome
                 )
             self.conversation_state.set_state(task.task_id, "responded")
             if hasattr(self, "context_buffer"):
@@ -1996,20 +2023,25 @@ class AssistantEngine:
         remember("assistant", direct_reply)
         return ReplyDeliverable(text=direct_reply, channel_used="direct", plan=plan)
 
-    def dispatch_outbound(self, to_wxid: str, reply: ReplyDeliverable) -> None:
+    def dispatch_outbound(self, to_wxid: str, reply: ReplyDeliverable) -> DispatchOutcome:
         """Send response text and deliverables via WeChat GeWe client.
 
         Attachments are deduplicated by media_id and dispatched strictly one at a
         time with a pause between sends. GeWe pulls every ``fileUrl`` server-side
         under its own short download timeout, so parallel sends contend for the
         tunnel's upstream bandwidth and make that timeout far more likely.
+
+        Never raises; the returned :class:`DispatchOutcome` says which pieces
+        were actually handed to GeWe, and the chat archive records only those.
         """
         if reply.suppress_outbound:
             logger.info("Outbound suppressed for channel=%s", reply.channel_used)
-            return
+            return DispatchOutcome(suppressed=True)
         # 1. Send text reply
+        sent_text = False
         try:
             self.wechat.send_text(to_wxid=to_wxid, content=reply.text)
+            sent_text = True
         except Exception as exc:
             logger.error("Failed to send text to %s: %s", to_wxid, exc)
 
@@ -2023,6 +2055,7 @@ class AssistantEngine:
                 to_wxid,
             )
 
+        sent_media_ids: list[str] = []
         interval = dispatch_interval_seconds(self)
         already_sent = False
         for deliv in attachments:
@@ -2055,12 +2088,14 @@ class AssistantEngine:
                         file_url=media_url,
                         file_name=deliv.filename,
                     )
+                sent_media_ids.append(deliv.media_id)
             except Exception as exc:
                 logger.error("Failed to send attachment %s: %s", deliv.filename, exc)
 
         # 3. Private reminder to the group owner for a non-standard demand.
         if reply.owner_notify_text:
             self.notify_owner(to_wxid=to_wxid, text=reply.owner_notify_text)
+        return DispatchOutcome(sent_text=sent_text, sent_media_ids=tuple(sent_media_ids))
 
     def notify_owner(self, *, to_wxid: str, text: str) -> None:
         """Send a private reminder about a non-standard demand to a group's owner.

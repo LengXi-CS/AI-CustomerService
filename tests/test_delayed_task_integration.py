@@ -6,6 +6,7 @@ from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
 from fastgpt_assistant.orchestration.conversation_state import ConversationStateStore
 from fastgpt_assistant.orchestration.engine import (
     AssistantEngine,
+    DispatchOutcome,
     InboundEvent,
     ReplyDeliverable,
 )
@@ -47,9 +48,12 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
         return ReplyDeliverable(text="已处理")
 
     engine.process_text_query = fake_process
-    engine.dispatch_outbound = lambda *, to_wxid, reply: outbound.append(
-        f"{to_wxid}:{reply.text}"
-    )
+
+    def fake_dispatch(*, to_wxid, reply) -> DispatchOutcome:
+        outbound.append(f"{to_wxid}:{reply.text}")
+        return DispatchOutcome(sent_text=True)
+
+    engine.dispatch_outbound = fake_dispatch
     engine.chat_log = ChatLogStore(tmp_path / "chat-log.db")
 
     event = InboundEvent(
