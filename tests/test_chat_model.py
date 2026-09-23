@@ -151,6 +151,50 @@ def test_planner_prompt_asks_for_two_independent_signals() -> None:
     assert plan.completeness == 0.88
 
 
+def test_planner_prompt_treats_informational_sync_as_silent() -> None:
+    """纯告知/信息同步（运单号、金额审核状态、发货安排等未提出请求的消息）
+    必须在提示词里被明确归为"无业务意图 → intent_confidence < 0.50 → 静默"，
+    防止回归为"非标准需求 → 安抚 + 私聊负责人"（2026-09-23 实测踩坑：
+    客户在群里贴运单号触发了两次非标准需求回复）。"""
+
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["system"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "channel": "clarify",
+                                    "operation": "clarify",
+                                    "intent_confidence": 0.30,
+                                    "completeness": 0.30,
+                                    "demand_kind": "non_standard",
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = _client_with_transport(handler)
+    try:
+        client.plan_query("KYE900014199973")
+    finally:
+        client.close()
+
+    system = seen["system"]
+    assert "信息同步" in system
+    assert "单号" in system
+    assert "已审核" in system
+
+
 def test_planner_still_accepts_a_legacy_single_confidence_response() -> None:
     client = _client_with_transport(
         _planner_response(
