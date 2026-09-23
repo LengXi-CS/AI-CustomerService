@@ -134,11 +134,17 @@ def health_check() -> dict[str, Any]:
     """Health status check."""
     engine = get_engine()
     db_ok = engine.settings.db_path.exists()
+    chat_log = getattr(engine, "chat_log", None)
     return {
         "status": "healthy" if db_ok else "degraded",
         "database": {
             "path": str(engine.settings.db_path),
             "exists": db_ok,
+        },
+        "chat_log": {
+            "enabled": bool(chat_log is not None and chat_log.enabled),
+            "path": str(engine.settings.chat_log_db_path),
+            "exists": engine.settings.chat_log_db_path.exists(),
         },
         "media_store": {
             "dir": str(engine.settings.media_dir),
@@ -181,6 +187,11 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
     event = engine.parse_gewe_callback(body)
     if not event:
         return {"ret": 200, "msg": "ignored"}
+
+    # Archive before routing, so a message the group policy then drops (客服没 @
+    # 机器人、客户没按要求的 @) still shows up in the group's history. Only
+    # configured groups are written; the call is best-effort and never raises.
+    engine.log_group_inbound(event)
 
     route = engine.route_group_event(event)
     if not route.allowed:
@@ -244,6 +255,11 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
                 engine.dispatch_outbound,
                 to_wxid=event.chat_id,
                 reply=reply,
+            )
+            engine.log_group_outbound(
+                to_wxid=event.chat_id,
+                reply=reply,
+                task_id=staff_task_id,
             )
             if staff_task_id:
                 engine.conversation_state.set_state(staff_task_id, "responded")

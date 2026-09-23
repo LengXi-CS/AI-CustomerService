@@ -20,6 +20,7 @@ from fastgpt_assistant.adapters.llm.chat_model import (
     clean_wechat_text,
 )
 from fastgpt_assistant.adapters.wechat.client import WechatGeweClient
+from fastgpt_assistant.core.chat_log import ChatLogEntry, ChatLogStore, message_kind
 from fastgpt_assistant.core.config import Settings
 from fastgpt_assistant.core.media_store import MediaStore
 from fastgpt_assistant.core.models import Deliverable, ExecutionResult
@@ -44,8 +45,10 @@ from fastgpt_assistant.orchestration.group_context import GroupContextWindow
 from fastgpt_assistant.orchestration.inbound import (
     extract_quote_payload,
     is_bot_mentioned,
+    mention_names,
     normalize_media_xml,
     scalar_text,
+    sender_display_name,
     split_group_sender,
     strip_group_mention,
 )
@@ -109,6 +112,11 @@ SCOPE_LABELS: dict[str, str] = {
 
 _MAX_BUFFERED_IMAGE_BYTES = 8 * 1024 * 1024
 
+# Attachment suffixes GeWe must receive through ``sendImage`` rather than
+# ``sendFile``. Shared by the dispatcher and the chat archive so a logged image
+# row and an actually-sent image cannot disagree.
+_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+
 
 def _detect_image_mime_type(image_data: bytes) -> str:
     """Detect supported image types from file signatures, not user-controlled names."""
@@ -150,8 +158,13 @@ class InboundEvent:
     file_name: str = ""
     sender_id: str = ""
     sender_role: Literal["customer", "staff"] = "customer"
+    sender_name: str = ""
     is_group: bool = False
     mentioned_bot: bool = False
+    # Names the message @-mentioned, captured before ``strip_group_mention``
+    # deletes the leading token: the chat archive needs them to replay a bubble
+    # the way it was actually written.
+    mentions: tuple[str, ...] = ()
     visual_sku_code: str = ""
     quoted_text: str = ""
     quoted_type: str = ""
@@ -210,6 +223,19 @@ def dispatch_interval_seconds(engine: Any) -> float:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 0.0
+
+
+def event_occurred_at(event: InboundEvent) -> str | datetime:
+    """Return the moment an inbound event happened.
+
+    GeWe does not populate ``received_at`` on its callbacks, so this normally
+    resolves to arrival time. It stays a helper so the chat archive and the
+    conversation-state store always agree on the same instant for one event.
+    """
+    received_at = event.raw_payload.get("received_at")
+    if isinstance(received_at, str) and received_at.strip():
+        return received_at
+    return datetime.now(UTC)
 
 
 _DEFAULT_CLARIFY_QUESTION = "请问您想查询哪个品牌或产品的具体信息？"
@@ -361,6 +387,7 @@ class AssistantEngine:
         media_store: MediaStore | None = None,
         context_buffer: ContextBuffer | None = None,
         groups_config: WechatGroupsConfig | None = None,
+        chat_log: ChatLogStore | None = None,
     ) -> None:
         self.settings = settings
         self.media_store = media_store or MediaStore(resources_root=settings.media_dir)
@@ -392,6 +419,19 @@ class AssistantEngine:
         self._groups_provider = WechatGroupsProvider(settings.wechat_groups_config_path)
         self._groups_override: WechatGroupsConfig | None = groups_config
         self._group_context_windows: dict[str, GroupContextWindow] = {}
+        # Archiving group history must never be able to stop the service from
+        # booting, so an unusable database degrades to "logging off" instead of
+        # raising out of __init__.
+        self.chat_log: ChatLogStore | None = None
+        try:
+            self.chat_log = chat_log or ChatLogStore(
+                db_path=settings.chat_log_db_path,
+                enabled=settings.chat_log_enabled,
+            )
+        except Exception:
+            logger.exception(
+                "Chat log store is unavailable; configured-group history will not be archived"
+            )
 
         self.model_client = ChatModelClient(
             api_key=settings.llm_api_key or "placeholder",
@@ -484,6 +524,137 @@ class AssistantEngine:
                 message_ids={entry["message_id"] for entry in context.read()},
             )
 
+    def log_group_inbound(self, event: InboundEvent) -> None:
+        """Archive one inbound message of a configured group. Never raises.
+
+        Called from the webhook **before** routing on purpose: a message the
+        policy then drops (客服没 @机器人、客户没按要求的 @) is still part of the
+        group's history, and "为什么这条没回" is answered by exactly those rows.
+        Only configured groups are written — a private chat or an unknown group
+        is left alone, which is what keeps the archive bounded to the groups the
+        owner explicitly chose to run.
+        """
+        store = getattr(self, "chat_log", None)
+        if store is None or not store.enabled or not event.is_group:
+            return
+        policy = self.groups_config.get(event.chat_id)
+        if policy is None:
+            return
+        try:
+            store.record(
+                ChatLogEntry(
+                    chat_id=event.chat_id,
+                    chat_name=policy.group_name,
+                    direction="inbound",
+                    sender_id=event.sender_id or event.from_user,
+                    sender_name=event.sender_name,
+                    sender_role="staff" if event.sender_role == "staff" else "customer",
+                    kind=message_kind(
+                        event.msg_type,
+                        is_image=event.is_image,
+                        has_text=bool(event.text.strip()),
+                    ),
+                    msg_type=event.msg_type,
+                    text=event.text,
+                    message_id=event.message_id,
+                    quoted_msg_id=event.quoted_msg_id,
+                    quoted_type=event.quoted_type,
+                    quoted_text=event.quoted_text,
+                    # The same deterministic handle ``process_image`` stages the
+                    # bytes under, so a row can be traced back to the file.
+                    media_ref=f"inm_{event.message_id}" if event.is_image else "",
+                    metadata={
+                        "is_group": True,
+                        "mentioned_bot": event.mentioned_bot,
+                        "mentions": list(event.mentions),
+                        # Needed to re-download the *quoted* image/file later; it
+                        # is bulkier than the rest and rarely rendered, so it
+                        # lives here instead of in a dedicated column.
+                        "quoted_media_xml": event.quoted_media_xml,
+                    },
+                    occurred_at=event_occurred_at(event),
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Unable to archive inbound group message chat=%s message=%s",
+                event.chat_id,
+                event.message_id,
+            )
+
+    def log_group_outbound(
+        self,
+        *,
+        to_wxid: str,
+        reply: ReplyDeliverable,
+        task_id: str = "",
+    ) -> None:
+        """Archive what the bot actually sent into a configured group.
+
+        Only called **after** a dispatch that did not raise, and only for a
+        configured group: a shadow-mode reply was never sent and a private owner
+        reminder belongs to a different chat, so neither appears here. The
+        archive therefore stays a record of the group's real conversation rather
+        than of what the bot intended.
+        """
+        store = getattr(self, "chat_log", None)
+        if store is None or not store.enabled or not to_wxid.endswith("@chatroom"):
+            return
+        policy = self.groups_config.get(to_wxid)
+        if policy is None:
+            return
+
+        try:
+            occurred_at = datetime.now(UTC)
+            # getattr, not attribute access: several suites build a partial engine
+            # with a minimal settings namespace, and archiving must never be the
+            # thing that breaks a working reply.
+            sender_id = getattr(self.settings, "gewe_app_id", "") or "assistant"
+            entries: list[ChatLogEntry] = []
+            if reply.text.strip():
+                entries.append(
+                    ChatLogEntry(
+                        chat_id=to_wxid,
+                        chat_name=policy.group_name,
+                        direction="outbound",
+                        sender_id=sender_id,
+                        sender_role="assistant",
+                        kind="text",
+                        text=reply.text,
+                        channel_used=reply.channel_used,
+                        task_id=task_id,
+                        metadata={"is_group": True, "mentions": [], "mentioned_bot": False},
+                        occurred_at=occurred_at,
+                    )
+                )
+            for deliverable in dedupe_deliverables(reply.deliverables):
+                entries.append(
+                    ChatLogEntry(
+                        chat_id=to_wxid,
+                        chat_name=policy.group_name,
+                        direction="outbound",
+                        sender_id=sender_id,
+                        sender_role="assistant",
+                        kind=(
+                            "image"
+                            if Path(deliverable.filename).suffix.lower() in _IMAGE_SUFFIXES
+                            else "file"
+                        ),
+                        media_ref=deliverable.media_id,
+                        media_name=deliverable.filename,
+                        media_mime=deliverable.mime_type,
+                        media_size=deliverable.size_bytes or 0,
+                        channel_used=reply.channel_used,
+                        task_id=task_id,
+                        metadata={"is_group": True, "mentions": [], "mentioned_bot": False},
+                        occurred_at=occurred_at,
+                    )
+                )
+            for entry in entries:
+                store.record(entry)
+        except Exception:
+            logger.exception("Unable to archive outbound group message chat=%s", to_wxid)
+
     def parse_gewe_callback(self, data: dict[str, Any]) -> InboundEvent | None:
         """Parse raw GeWe webhook callback into a normalized InboundEvent."""
         type_name = data.get("TypeName", "")
@@ -543,10 +714,13 @@ class AssistantEngine:
             generic_staff_fallback=sender_role == "staff",
         )
         if is_group:
+            mentions = mention_names(msg_data, content_text)
             content_text = strip_group_mention(
                 content_text,
                 aliases=group_policy.bot_aliases if group_policy else (),
             )
+        else:
+            mentions = ()
 
         # Ignore self-sent messages, including a bot sender embedded in a group payload.
         if self.settings.gewe_app_id and sender_id == self.settings.gewe_app_id:
@@ -564,8 +738,10 @@ class AssistantEngine:
             is_image=is_image,
             sender_id=sender_id,
             sender_role=sender_role,
+            sender_name=sender_display_name(msg_data),
             is_group=is_group,
             mentioned_bot=mentioned_bot,
+            mentions=mentions,
             quoted_text=quoted_text,
             quoted_type=quoted_type,
             quoted_media_xml=quoted_media_xml,
@@ -600,7 +776,7 @@ class AssistantEngine:
         """Persist event metadata for quiet-window and human-takeover decisions."""
         self.record_group_context_event(event)
         text = event.text or f"[message-type:{event.msg_type}]"
-        received_at = event.raw_payload.get("received_at") or datetime.now(UTC)
+        received_at = event_occurred_at(event)
         if event.sender_role == "staff":
             receipt = self.conversation_state.record_staff_message(
                 chat_id=event.chat_id,
@@ -760,6 +936,9 @@ class AssistantEngine:
             policy = self.groups_config.get(task.chat_id)
             if policy is not None and policy.mode != "shadow":
                 self.dispatch_outbound(to_wxid=task.chat_id, reply=reply)
+                self.log_group_outbound(
+                    to_wxid=task.chat_id, reply=reply, task_id=task.task_id
+                )
             self.conversation_state.set_state(task.task_id, "responded")
             if hasattr(self, "context_buffer"):
                 self.context_buffer.clear_task_media(task.task_id)
@@ -917,14 +1096,24 @@ class AssistantEngine:
         history: list[dict[str, str]] | None = None,
         task_input: MultimodalTaskInput | None = None,
     ) -> str:
-        """Compose a warm, human acknowledgement for a non-standard demand.
+        """Compose the acknowledgement for a non-standard demand.
 
-        The wording must vary per message and read like a person, so it is
-        generated by the model rather than sent as a fixed string.
-        ``NON_STANDARD_SOOTHE_REPLY`` is only the backstop for when the model is
-        unreachable — a non-standard demand must still get a human reply instead
-        of silence.
+        Two modes, selected by ``soothe_mode`` in ``config/wechat_groups.toml``
+        and hot-reloaded with the rest of that file:
+
+        * ``model`` (default) — the wording must vary per message and read like a
+          person, so it is generated. ``NON_STANDARD_SOOTHE_REPLY`` is only the
+          backstop for when the model is unreachable: a non-standard demand must
+          still get a human reply instead of silence.
+        * ``fixed`` — one operator-authored sentence for every such demand. The
+          owner asked for this option so the wording is predictable and reviewable
+          ("收到，我们加急处理"), and so the path costs no model call.
         """
+        config = self.groups_config
+        fixed_reply = clean_wechat_text(config.soothe_fixed_reply).strip()
+        if config.soothe_mode == "fixed" and fixed_reply:
+            logger.info("Using the fixed soothing wording (soothe_mode=fixed)")
+            return fixed_reply
         try:
             try:
                 composed = self.model_client.compose_soothe_reply(
@@ -1835,7 +2024,6 @@ class AssistantEngine:
             )
 
         interval = dispatch_interval_seconds(self)
-        image_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
         already_sent = False
         for deliv in attachments:
             media_url = deliv.download_url
@@ -1857,7 +2045,7 @@ class AssistantEngine:
                 media_url,
             )
             try:
-                if Path(deliv.filename).suffix.lower() in image_suffixes:
+                if Path(deliv.filename).suffix.lower() in _IMAGE_SUFFIXES:
                     # Send image attachment
                     self.wechat.send_image(to_wxid=to_wxid, img_url=media_url)
                 else:

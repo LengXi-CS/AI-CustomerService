@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from fastgpt_assistant.core.chat_log import ChatLogStore
 from fastgpt_assistant.core.query_engine import ReadModel
 from fastgpt_assistant.core.schema import QueryPlan
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
@@ -413,3 +414,105 @@ def test_demand_bundle_merges_owner_reminders(tmp_path) -> None:
 
     assert reply.owner_notify_text
     assert CUSTOMER in reply.owner_notify_text
+
+
+# --------------------------------------------------------------------------- #
+# soothing-wording mode (soothe_mode = fixed | model)
+# --------------------------------------------------------------------------- #
+FIXED_REPLY = "收到，我们加急处理"
+
+
+def _fixed_wording_config(reply_text: str = FIXED_REPLY) -> WechatGroupsConfig:
+    return WechatGroupsConfig.from_mapping(
+        {
+            "global": {
+                "enabled": True,
+                "soothe_mode": "fixed",
+                "soothe_fixed_reply": reply_text,
+            },
+            "groups": [
+                {"group_id": ROOM, "mode": "active", "owner_id": OWNER,
+                 "require_customer_mention": False}
+            ],
+        }
+    )
+
+
+def test_fixed_mode_sends_the_configured_sentence(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = _fixed_wording_config()
+
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+
+    assert reply.channel_used == "soothe"
+    assert reply.text == FIXED_REPLY
+    # The whole point of the fixed mode: it costs no model call.
+    assert engine.model_client.soothe_calls == []
+
+
+def test_fixed_mode_still_reminds_the_owner(tmp_path) -> None:
+    """The wording is fixed; the handoff is not optional."""
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = _fixed_wording_config()
+
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+
+    assert reply.owner_notify_text
+    assert CUSTOMER in reply.owner_notify_text
+
+
+def test_fixed_mode_honours_a_custom_sentence(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = _fixed_wording_config("稍等，我这边马上安排人跟进。")
+
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+
+    assert reply.text == "稍等，我这边马上安排人跟进。"
+
+
+def test_fixed_mode_falls_back_to_the_model_when_no_sentence_is_configured(
+    tmp_path,
+) -> None:
+    """A blank fixed wording must not turn into an empty bubble."""
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = WechatGroupsConfig(soothe_mode="fixed", soothe_fixed_reply="   ")
+
+    assert engine.compose_soothe_text(user_query="帮我改一下发票抬头") == SOOTHE
+    assert engine.model_client.soothe_calls == ["帮我改一下发票抬头"]
+
+
+def test_model_mode_still_generates_the_wording(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = WechatGroupsConfig(soothe_mode="model")
+
+    assert engine.compose_soothe_text(user_query="帮我改一下发票抬头") == SOOTHE
+    assert engine.model_client.soothe_calls == ["帮我改一下发票抬头"]
+
+
+def test_model_mode_keeps_the_fallback_when_the_model_is_unreachable(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path, soothe_error=RuntimeError("llm down"))
+    engine.groups_config = WechatGroupsConfig(soothe_mode="model")
+
+    assert engine.compose_soothe_text(user_query="帮我改一下发票抬头") == (
+        NON_STANDARD_SOOTHE_REPLY
+    )
+
+
+def test_fixed_mode_reply_reaches_the_group_chat_log(tmp_path) -> None:
+    """The two 2026-09-23 changes have to agree end to end: the archived group
+    record must show the same sentence the group actually received."""
+    engine = _engine(_plan(), tmp_path)
+    engine.groups_config = _fixed_wording_config()
+    engine.chat_log = ChatLogStore(tmp_path / "chat-log.db")
+
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+    engine.dispatch_outbound(ROOM, reply)
+    engine.log_group_outbound(to_wxid=ROOM, reply=reply, task_id="task-1")
+
+    assert engine.wechat.sent[0] == (ROOM, FIXED_REPLY)
+    rows = engine.chat_log.recent(chat_id=ROOM)
+    assert [row.text for row in rows] == [FIXED_REPLY]
+    assert rows[0].direction == "outbound"
+    assert rows[0].sender_role == "assistant"
+    assert rows[0].channel_used == "soothe"
+    assert rows[0].task_id == "task-1"

@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig, WechatGroupsProvider
 from fastgpt_assistant.orchestration.engine import AssistantEngine
 
@@ -8,9 +10,15 @@ GROUP_ID = "room@chatroom"
 OWNER_ID = "staff-wxid"
 
 
-def _toml(*group_ids: str, enabled: bool = True) -> str:
+def _toml(
+    *group_ids: str,
+    enabled: bool = True,
+    soothe_mode: str | None = None,
+) -> str:
     """Build a minimal group policy file for the reload tests."""
     header = f"[global]\nenabled = {'true' if enabled else 'false'}\n"
+    if soothe_mode is not None:
+        header += f'soothe_mode = "{soothe_mode}"\n'
     blocks = "".join(
         f'[[groups]]\ngroup_id = "{group_id}"\nmode = "active"\n' for group_id in group_ids
     )
@@ -186,3 +194,66 @@ def test_assigning_groups_config_pins_the_supplied_configuration(tmp_path: Path)
     engine.groups_config = pinned
 
     assert engine.groups_config is pinned
+
+
+# --------------------------------------------------------------------------- #
+# soothing-wording mode
+# --------------------------------------------------------------------------- #
+def test_soothe_mode_defaults_to_model_generated_wording() -> None:
+    """An existing deployment must not silently switch wording on upgrade."""
+    config = WechatGroupsConfig()
+
+    assert config.soothe_mode == "model"
+    assert config.soothe_fixed_reply == "收到，我们加急处理"
+
+
+def test_soothe_mode_and_wording_are_read_from_the_global_section() -> None:
+    config = WechatGroupsConfig.from_mapping(
+        {
+            "global": {
+                "enabled": True,
+                "soothe_mode": "fixed",
+                "soothe_fixed_reply": "收到，我们加急处理",
+            }
+        }
+    )
+
+    assert config.soothe_mode == "fixed"
+    assert config.soothe_fixed_reply == "收到，我们加急处理"
+
+
+def test_an_unknown_soothe_mode_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        WechatGroupsConfig.from_mapping({"global": {"soothe_mode": "sometimes"}})
+
+
+def test_an_empty_fixed_wording_falls_back_to_the_default_sentence() -> None:
+    config = WechatGroupsConfig.from_mapping(
+        {"global": {"soothe_mode": "fixed", "soothe_fixed_reply": "   "}}
+    )
+
+    assert config.soothe_fixed_reply == "收到，我们加急处理"
+
+
+def test_soothe_mode_is_hot_reloaded_with_the_group_file(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml(GROUP_ID, soothe_mode="model"), encoding="utf-8")
+    provider = WechatGroupsProvider(path)
+
+    assert provider.current().soothe_mode == "model"
+
+    path.write_text(_toml(GROUP_ID, soothe_mode="fixed"), encoding="utf-8")
+
+    assert provider.current().soothe_mode == "fixed"
+
+
+def test_a_broken_file_keeps_the_last_good_soothe_mode(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml(GROUP_ID, soothe_mode="fixed"), encoding="utf-8")
+    provider = WechatGroupsProvider(path)
+    good = provider.current()
+
+    path.write_text("[global]\nsoothe_mode = \n", encoding="utf-8")
+
+    assert provider.current() is good
+    assert provider.current().soothe_mode == "fixed"

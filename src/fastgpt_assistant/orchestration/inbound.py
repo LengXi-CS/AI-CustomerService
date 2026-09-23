@@ -170,3 +170,57 @@ def strip_group_mention(text: str, *, aliases: tuple[str, ...] = ()) -> str:
     for alias in aliases:
         cleaned = re.sub(rf"^\s*@{re.escape(alias)}[\s\u2005]*", "", cleaned)
     return re.sub(r"^\s*@\S+[\s\u2005]*", "", cleaned).strip()
+
+
+def mention_names(data: dict[str, Any], text: str) -> tuple[str, ...]:
+    """Return the names a message @-mentioned, for faithful replay.
+
+    :func:`strip_group_mention` removes the leading ``@昵称`` before the planner
+    runs, so the archived body no longer shows who was addressed. GeWe's explicit
+    mention fields are read first; only when they are absent does the leading
+    display name inside the content stand in for them.
+
+    De-duplicated and order-preserving, so a viewer can render the mention chips
+    exactly as the platform reported them.
+    """
+    names: list[str] = []
+    for key in (
+        "AtUserNames",
+        "MentionedUserNames",
+        "AtUserName",
+        "AtUserList",
+        "MentionedUserList",
+    ):
+        for value in _strings(data.get(key)):
+            candidate = value.lstrip("@").strip()
+            if candidate and candidate not in names:
+                names.append(candidate)
+    if not names:
+        match = re.match(r"^\s*@([^\s\u2005]+)", text)
+        if match:
+            names.append(match.group(1))
+    return tuple(names)
+
+
+_SENDER_NAME_KEYS = (
+    "DisplayName",
+    "SenderName",
+    "SenderNickName",
+    "NickName",
+    "MemberName",
+)
+
+
+def sender_display_name(data: dict[str, Any]) -> str:
+    """Best-effort display name of the sender.
+
+    GeWe documents no nickname field for group messages, and the callbacks this
+    deployment has captured never carried one. Returns an empty string rather
+    than guessing, so a viewer falls back to the wxid instead of showing a name
+    we invented.
+    """
+    for key in _SENDER_NAME_KEYS:
+        value = scalar_text(data.get(key))
+        if value:
+            return value
+    return ""

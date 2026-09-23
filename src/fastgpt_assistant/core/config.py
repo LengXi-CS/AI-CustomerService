@@ -157,6 +157,14 @@ class Settings(BaseSettings):
             "CONVERSATION_STATE_DB_PATH", "EA_CONVERSATION_STATE_DB_PATH"
         ),
     )
+    chat_log_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CHAT_LOG_ENABLED", "EA_CHAT_LOG_ENABLED"),
+    )
+    chat_log_db_path: Path = Field(
+        default=Path("data/chat-log.db"),
+        validation_alias=AliasChoices("CHAT_LOG_DB_PATH", "EA_CHAT_LOG_DB_PATH"),
+    )
     conversation_quiet_window_seconds: int = Field(
         default=120,
         validation_alias=AliasChoices(

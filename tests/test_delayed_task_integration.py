@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+from fastgpt_assistant.core.chat_log import ChatLogStore
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
 from fastgpt_assistant.orchestration.conversation_state import ConversationStateStore
 from fastgpt_assistant.orchestration.engine import (
@@ -49,6 +50,7 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
     engine.dispatch_outbound = lambda *, to_wxid, reply: outbound.append(
         f"{to_wxid}:{reply.text}"
     )
+    engine.chat_log = ChatLogStore(tmp_path / "chat-log.db")
 
     event = InboundEvent(
         message_id="wechat-msg-1",
@@ -89,6 +91,12 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
     assert outbound == ["room@chatroom:已处理"]
     assert store.get_task(task.task_id).state == "responded"
     assert vault.retrieve_text(receipt.event_id) is not None
+    # The delayed path must also leave the sent reply in the group's chat log,
+    # so a replay shows the same conversation the group actually saw.
+    assert [
+        (row.direction, row.sender_role, row.text)
+        for row in engine.chat_log.recent(chat_id="room@chatroom")
+    ] == [("outbound", "assistant", "已处理")]
 
 
 def test_demand_bundle_queries_each_independent_demand_once() -> None:

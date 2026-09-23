@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 GroupMode = Literal["disabled", "shadow", "active"]
 SenderRole = Literal["customer", "staff"]
 
+# 安抚话术的两种来源：
+#   model —— 每个非标准需求由模型现写一句（默认，措辞不重复、更像真人）；
+#   fixed —— 所有非标准需求统一使用一句固定文案，可控、可审计、不耗模型调用。
+SootheMode = Literal["model", "fixed"]
+DEFAULT_FIXED_SOOTHE_REPLY = "收到，我们加急处理"
+
 
 def _text(value: Any) -> str:
     """Normalize a scalar configuration value without exposing raw input."""
@@ -88,6 +94,8 @@ class WechatGroupsConfig:
 
     enabled: bool = False
     default_reply_to_staff_when_mentioned: bool = True
+    soothe_mode: SootheMode = "model"
+    soothe_fixed_reply: str = DEFAULT_FIXED_SOOTHE_REPLY
     groups: dict[str, WechatGroupPolicy] | None = None
 
     def __post_init__(self) -> None:
@@ -103,6 +111,9 @@ class WechatGroupsConfig:
         raw_groups = value.get("groups", [])
         if not isinstance(raw_groups, list):
             raise ValueError("groups must be an array")
+        soothe_mode = _text(global_config.get("soothe_mode")) or "model"
+        if soothe_mode not in {"model", "fixed"}:
+            raise ValueError("soothe_mode must be model or fixed")
         policies = [WechatGroupPolicy.from_mapping(item) for item in raw_groups]
         group_map = {policy.group_id: policy for policy in policies}
         if len(group_map) != len(policies):
@@ -111,6 +122,10 @@ class WechatGroupsConfig:
             enabled=bool(global_config.get("enabled", False)),
             default_reply_to_staff_when_mentioned=bool(
                 global_config.get("reply_to_staff_when_mentioned", True)
+            ),
+            soothe_mode=soothe_mode,
+            soothe_fixed_reply=(
+                _text(global_config.get("soothe_fixed_reply")) or DEFAULT_FIXED_SOOTHE_REPLY
             ),
             groups=group_map,
         )
