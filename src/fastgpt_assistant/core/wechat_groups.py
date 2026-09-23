@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 GroupMode = Literal["disabled", "shadow", "active"]
 SenderRole = Literal["customer", "staff"]
@@ -126,3 +129,70 @@ class WechatGroupsConfig:
     def role_for(self, group_id: str, sender_id: str) -> SenderRole:
         policy = self.get(group_id)
         return policy.sender_role(sender_id) if policy else "customer"
+
+
+class WechatGroupsProvider:
+    """File-backed group policy source that reloads when the TOML file changes.
+
+    Operators add customer groups regularly; requiring a service restart for a
+    pure data edit is both slow and risky (restarts re-read the public callback
+    origin). This provider re-reads the file whenever its ``(mtime_ns, size)``
+    stamp moves, so an edit takes effect on the next message.
+
+    Failures never take the running service down:
+
+    * a malformed or unreadable file keeps the **last known good** policy set
+      in effect and logs the problem once per distinct file state;
+    * a missing file degrades to the same fail-closed default as
+      :meth:`WechatGroupsConfig.load` (group handling disabled).
+
+    The stamp is always recorded, including on failure, so a broken file does
+    not re-parse (and re-log) on every single message.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+        self._stamp: tuple[int, int] | None = None
+        self._loaded = False
+        self._config = WechatGroupsConfig()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _stamp_of_path(self) -> tuple[int, int] | None:
+        """Return the file's ``(mtime_ns, size)``, or ``None`` when absent."""
+        try:
+            status = self._path.stat()
+        except OSError:
+            return None
+        return (status.st_mtime_ns, status.st_size)
+
+    def current(self) -> WechatGroupsConfig:
+        """Return the active configuration, reloading only when the file moved."""
+        stamp = self._stamp_of_path()
+        if self._loaded and stamp == self._stamp:
+            return self._config
+        try:
+            config = WechatGroupsConfig.load(self._path)
+        except Exception:
+            logger.exception(
+                "WeChat group configuration at %s is invalid; keeping the previous "
+                "%d configured group(s) until the file changes again",
+                self._path,
+                len(self._config.groups or {}),
+            )
+            self._stamp = stamp
+            self._loaded = True
+            return self._config
+        logger.info(
+            "Loaded WeChat group configuration from %s: enabled=%s, %d group(s)%s",
+            self._path,
+            config.enabled,
+            len(config.groups or {}),
+            "" if self._loaded else " (initial load)",
+        )
+        self._config = config
+        self._stamp = stamp
+        self._loaded = True
+        return self._config

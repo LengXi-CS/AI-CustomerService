@@ -29,7 +29,7 @@ from fastgpt_assistant.core.query_engine import (
     SqliteQueryExecutor,
 )
 from fastgpt_assistant.core.schema import QueryClarification, QueryEntity, QueryPlan
-from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
+from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig, WechatGroupsProvider
 from fastgpt_assistant.orchestration.context_buffer import ContextBuffer
 from fastgpt_assistant.orchestration.conversation_state import (
     ConversationStateStore,
@@ -389,9 +389,8 @@ class AssistantEngine:
             )
         except PayloadVaultKeyError:
             logger.error("Payload vault key is unavailable; delayed group replies are disabled")
-        self.groups_config = groups_config or WechatGroupsConfig.load(
-            settings.wechat_groups_config_path
-        )
+        self._groups_provider = WechatGroupsProvider(settings.wechat_groups_config_path)
+        self._groups_override: WechatGroupsConfig | None = groups_config
         self._group_context_windows: dict[str, GroupContextWindow] = {}
 
         self.model_client = ChatModelClient(
@@ -409,6 +408,24 @@ class AssistantEngine:
             token=settings.gewe_token,
             app_id=settings.gewe_app_id,
         )
+
+    @property
+    def groups_config(self) -> WechatGroupsConfig:
+        """Active group policy, re-read from disk when the TOML file changes.
+
+        Adding or editing a customer group in ``config/wechat_groups.toml``
+        takes effect on the next message — no service restart needed. Assigning
+        to this attribute pins a fixed configuration instead, which is what
+        tests and callers that supply their own policy set rely on.
+        """
+        override = self._groups_override
+        if override is not None:
+            return override
+        return self._groups_provider.current()
+
+    @groups_config.setter
+    def groups_config(self, value: WechatGroupsConfig) -> None:
+        self._groups_override = value
 
     def observe_public_origin(self, *, host: str, proto: str) -> None:
         """Use a trusted reverse-proxy origin for immediate attachment delivery."""

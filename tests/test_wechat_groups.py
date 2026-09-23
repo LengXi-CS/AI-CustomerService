@@ -1,10 +1,29 @@
+from pathlib import Path
 from types import SimpleNamespace
 
-from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
+from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig, WechatGroupsProvider
 from fastgpt_assistant.orchestration.engine import AssistantEngine
 
 GROUP_ID = "room@chatroom"
 OWNER_ID = "staff-wxid"
+
+
+def _toml(*group_ids: str, enabled: bool = True) -> str:
+    """Build a minimal group policy file for the reload tests."""
+    header = f"[global]\nenabled = {'true' if enabled else 'false'}\n"
+    blocks = "".join(
+        f'[[groups]]\ngroup_id = "{group_id}"\nmode = "active"\n' for group_id in group_ids
+    )
+    return header + blocks
+
+
+def _file_backed_engine(path: Path) -> AssistantEngine:
+    """Engine wired to a real file so reload behaviour can be exercised."""
+    engine = object.__new__(AssistantEngine)
+    engine.settings = SimpleNamespace(gewe_app_id="bot-wxid")
+    engine._groups_override = None
+    engine._groups_provider = WechatGroupsProvider(path)
+    return engine
 
 
 def _engine() -> AssistantEngine:
@@ -84,3 +103,86 @@ def test_private_message_keeps_legacy_route() -> None:
     assert event.sender_id == "customer-wxid"
     assert event.chat_id == "customer-wxid"
     assert _engine().route_group_event(event).allowed is True
+
+
+def test_provider_picks_up_a_newly_added_group(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml("room-a@chatroom"), encoding="utf-8")
+    provider = WechatGroupsProvider(path)
+
+    assert set(provider.current().groups or {}) == {"room-a@chatroom"}
+
+    path.write_text(_toml("room-a@chatroom", "room-b@chatroom"), encoding="utf-8")
+
+    assert set(provider.current().groups or {}) == {"room-a@chatroom", "room-b@chatroom"}
+
+
+def test_provider_reuses_the_parsed_config_while_the_file_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml("room-a@chatroom"), encoding="utf-8")
+    provider = WechatGroupsProvider(path)
+
+    assert provider.current() is provider.current()
+
+
+def test_provider_keeps_last_good_config_when_the_file_is_broken(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml("room-a@chatroom"), encoding="utf-8")
+    provider = WechatGroupsProvider(path)
+    good = provider.current()
+
+    path.write_text("[[groups]]\ngroup_id = \n", encoding="utf-8")
+
+    assert provider.current() is good
+    assert set(provider.current().groups or {}) == {"room-a@chatroom"}
+
+
+def test_provider_fails_closed_when_the_file_is_absent(tmp_path: Path) -> None:
+    provider = WechatGroupsProvider(tmp_path / "missing.toml")
+
+    config = provider.current()
+
+    assert config.enabled is False
+    assert config.groups == {}
+    assert provider.current() is config
+
+
+def test_engine_groups_config_follows_file_changes(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml("room-a@chatroom"), encoding="utf-8")
+    engine = _file_backed_engine(path)
+
+    assert engine.groups_config.get("room-a@chatroom") is not None
+    assert engine.groups_config.get("room-b@chatroom") is None
+
+    path.write_text(_toml("room-a@chatroom", "room-b@chatroom"), encoding="utf-8")
+
+    assert engine.groups_config.get("room-b@chatroom") is not None
+
+
+def test_group_added_at_runtime_is_routed_without_a_restart(tmp_path: Path) -> None:
+    other_group = "other@chatroom"
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml(GROUP_ID), encoding="utf-8")
+    engine = _file_backed_engine(path)
+
+    event = engine.parse_gewe_callback(_message("customer-wxid:\n查一下 SKU", group_id=other_group))
+    assert event is not None
+    assert engine.route_group_event(event).reason == "group_not_configured"
+
+    path.write_text(_toml(GROUP_ID, other_group), encoding="utf-8")
+
+    assert engine.route_group_event(event).allowed is True
+
+
+def test_assigning_groups_config_pins_the_supplied_configuration(tmp_path: Path) -> None:
+    path = tmp_path / "wechat_groups.toml"
+    path.write_text(_toml("room-a@chatroom"), encoding="utf-8")
+    engine = _file_backed_engine(path)
+
+    pinned = WechatGroupsConfig.from_mapping({"global": {"enabled": True}})
+    engine.groups_config = pinned
+
+    assert engine.groups_config is pinned

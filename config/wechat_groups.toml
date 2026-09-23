@@ -1,4 +1,8 @@
 # Non-secret WeChat group policy. Keep tokens and API keys in .env only.
+#
+# 热加载：本文件按 (mtime_ns, size) 监听，改完**下一跳消息即生效，无需重启服务**。
+# 写坏语法时服务会保留上一份可用配置并落 logger.exception，不会打断正在服务的群。
+# 详见 交接文档.md「群策略热加载」与 docs/配置项速查.md 第一节。
 
 [global]
 enabled = true
@@ -6,12 +10,25 @@ reply_to_staff_when_mentioned = true
 
 [[groups]]
 group_id = "49195424680@chatroom"
-group_name = ""
+group_name = "AI客服测试（外部）"
 mode = "active"
 require_customer_mention = false
 allow_images = true
 allow_files = true
 owner_id = "wxid_2i863b4r6r3y22"
+# LangBot 的实际配置未保存机器人昵称；解析器同时支持 GeWe 的显式 @ 用户字段，
+# 且对名单内客服的“@某人”消息提供兼容兜底。确认机器人昵称后可在此补充别名。
+bot_aliases = []
+reply_to_staff_when_mentioned = true
+
+[[groups]]
+group_id = "46079713295@chatroom"
+group_name = "Y0051-瀚思品牌-袋鼠对接群"
+mode = "active"
+require_customer_mention = false
+allow_images = true
+allow_files = true
+owner_id = "25984983404774216@openim"
 # LangBot 的实际配置未保存机器人昵称；解析器同时支持 GeWe 的显式 @ 用户字段，
 # 且对名单内客服的“@某人”消息提供兼容兜底。确认机器人昵称后可在此补充别名。
 bot_aliases = []
