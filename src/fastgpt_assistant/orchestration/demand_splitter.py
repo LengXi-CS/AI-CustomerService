@@ -27,7 +27,7 @@ def _split_message(message: str) -> list[str]:
 
 
 def split_message_demands(message: str) -> list[str]:
-    """Split one inbound message into independent demand slots.
+    """Split legacy delayed payloads created before model-based segmentation.
 
     This intentionally does not merge with any other message.  Cross-message
     continuation is a separate, explicit decision; the durable task layer must
@@ -35,6 +35,25 @@ def split_message_demands(message: str) -> list[str]:
     """
 
     return _split_message(message)
+
+
+def validate_model_demands(message: str, demands: object) -> list[str] | None:
+    """Accept only ordered, lossless model segments of the original message.
+
+    Whitespace and strong punctuation may move to either neighboring segment.
+    All other characters must remain in their original order; an invented or
+    omitted detail makes the result unusable and callers keep one whole task.
+    """
+    if not isinstance(demands, list) or not 1 <= len(demands) <= 16:
+        return None
+    if any(not isinstance(part, str) or not part.strip() for part in demands):
+        return None
+    def normalized(value: str) -> str:
+        return re.sub(r"[\s；;]", "", value)
+
+    if normalized("".join(demands)) != normalized(message):
+        return None
+    return [part.strip() for part in demands]
 
 
 def _is_continuation(message: str) -> bool:

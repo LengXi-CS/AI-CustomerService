@@ -11,6 +11,8 @@ __pycache__/
 .venv/
 build/
 dist/
+node_modules/
+src/fastgpt_assistant/server/admin_static/
 *.egg-info/
 
 # Testing & Tools

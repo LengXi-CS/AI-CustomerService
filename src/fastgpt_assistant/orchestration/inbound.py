@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 
 
@@ -132,7 +133,6 @@ def is_bot_mentioned(
     *,
     bot_id: str,
     aliases: tuple[str, ...] = (),
-    generic_staff_fallback: bool = False,
 ) -> bool:
     """Recognize explicit GeWe mention fields and configured display aliases."""
     identities = tuple(item for item in (bot_id, *aliases) if item.strip())
@@ -155,13 +155,25 @@ def is_bot_mentioned(
 
     markers = [text, scalar_text(data.get("PushContent"))]
     for marker in markers:
-        if any(f"@{identity}" in marker for identity in identities):
+        if any(
+            re.search(rf"@{re.escape(identity)}(?=$|[\s\u2005])", marker)
+            for identity in identities
+        ):
             return True
 
-    # LangBot's historical config did not persist the bot's display nickname.
-    # For a configured staff sender, a leading @ is treated as an explicit bot
-    # command until a real bot alias is added to the group TOML.
-    return generic_staff_fallback and bool(re.match(r"^\s*@[^\s\u2005]+", text))
+    return False
+
+
+def revoked_message_id(text: str) -> str:
+    """Return the original message id from a WeChat revoke system message."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return ""
+    if root.tag != "sysmsg" or root.attrib.get("type") != "revokemsg":
+        return ""
+    message_id = root.findtext("./revokemsg/newmsgid", default="").strip()
+    return message_id if message_id.isdigit() else ""
 
 
 def strip_group_mention(text: str, *, aliases: tuple[str, ...] = ()) -> str:

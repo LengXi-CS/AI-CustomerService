@@ -3,13 +3,11 @@
 import argparse
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from fastgpt_assistant.core.bitable_sync import BitableSyncManager, LarkBitableClient
+from fastgpt_assistant.core.config import Settings
 
 
 def main() -> int:
@@ -30,26 +28,26 @@ def main() -> int:
         help="Skip downloading attachments (only index metadata)",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Enable verbose logging",
     )
     args = parser.parse_args()
 
-    # Load .env
-    load_dotenv()
+    configuration = Settings(_env_file=Path(__file__).resolve().parent.parent / ".env")
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    app_id = os.getenv("EA_LARK_APP_ID")
-    app_secret = os.getenv("EA_LARK_APP_SECRET")
-    app_token = os.getenv("EA_LARK_BITABLE_APP_TOKEN")
+    app_id = configuration.lark_app_id
+    app_secret = configuration.lark_app_secret
+    app_token = configuration.lark_bitable_app_token
 
     if not app_id or not app_secret or not app_token:
         print(
             "Error: Missing required environment variables: "
-            "EA_LARK_APP_ID, EA_LARK_APP_SECRET, EA_LARK_BITABLE_APP_TOKEN",
+            "LARK_APP_ID, LARK_APP_SECRET, LARK_BITABLE_APP_TOKEN (legacy EA_ names also accepted)",
             file=sys.stderr,
         )
         return 1

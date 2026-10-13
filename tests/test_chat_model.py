@@ -30,6 +30,26 @@ def _client_with_transport(handler) -> ChatModelClient:
     return client
 
 
+def test_demand_segmenter_receives_the_whole_multiline_message() -> None:
+    message = "杭州仓--开下单\n临近国庆，发货时间和到货时间确认下\n杭州仓地址：\n收货人：袋鼠"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["messages"][1]["content"] == message
+        assert "业务目标" in payload["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": json.dumps({"demands": [message]})}}]},
+        )
+
+    client = _client_with_transport(handler)
+    try:
+        assert client.split_demands(message) == [message]
+    finally:
+        client.close()
+
+
 def test_analyze_image_sends_openai_compatible_content_parts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -131,6 +151,7 @@ def test_planner_prompt_asks_for_two_independent_signals() -> None:
                                     "select": ["third_party_reports"],
                                     "intent_confidence": 0.93,
                                     "completeness": 0.88,
+                                    "message_act": "request",
                                 }
                             )
                         }
@@ -147,15 +168,14 @@ def test_planner_prompt_asks_for_two_independent_signals() -> None:
 
     assert "intent_confidence" in seen["system"]
     assert "completeness" in seen["system"]
+    assert "message_act" in seen["system"]
     assert plan.intent_confidence == 0.93
     assert plan.completeness == 0.88
+    assert plan.message_act == "request"
 
 
-def test_planner_prompt_treats_informational_sync_as_silent() -> None:
-    """纯告知/信息同步（运单号、金额审核状态、发货安排等未提出请求的消息）
-    必须在提示词里被明确归为"无业务意图 → intent_confidence < 0.50 → 静默"，
-    防止回归为"非标准需求 → 安抚 + 私聊负责人"（2026-09-23 实测踩坑：
-    客户在群里贴运单号触发了两次非标准需求回复）。"""
+def test_planner_prompt_classifies_informational_sync_as_statement() -> None:
+    """Status updates must not trigger a non-standard soothing reply."""
 
     seen: dict[str, str] = {}
 
@@ -175,6 +195,7 @@ def test_planner_prompt_treats_informational_sync_as_silent() -> None:
                                     "intent_confidence": 0.30,
                                     "completeness": 0.30,
                                     "demand_kind": "non_standard",
+                                    "message_act": "statement",
                                 }
                             )
                         }
@@ -185,14 +206,15 @@ def test_planner_prompt_treats_informational_sync_as_silent() -> None:
 
     client = _client_with_transport(handler)
     try:
-        client.plan_query("KYE900014199973")
+        plan = client.plan_query("KYE900014199973")
     finally:
         client.close()
 
     system = seen["system"]
-    assert "信息同步" in system
+    assert 'message_act="statement"' in system
     assert "单号" in system
     assert "已审核" in system
+    assert plan.message_act == "statement"
 
 
 def test_planner_still_accepts_a_legacy_single_confidence_response() -> None:
@@ -215,6 +237,7 @@ def test_planner_still_accepts_a_legacy_single_confidence_response() -> None:
 
     assert plan.intent_confidence == 0.88
     assert plan.completeness == 0.88
+    assert plan.message_act is None
 
 
 def test_planner_receives_group_context_as_a_bounded_message() -> None:

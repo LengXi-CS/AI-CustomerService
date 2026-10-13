@@ -54,6 +54,8 @@ class WechatGroupPolicy:
     customer_service_ids: tuple[str, ...] = ()
     bot_aliases: tuple[str, ...] = ()
     reply_to_staff_when_mentioned: bool = True
+    native_quote_replies: bool = False
+    associate_customer_demands: bool = False
 
     @classmethod
     def from_mapping(cls, value: Any) -> WechatGroupPolicy:
@@ -82,6 +84,8 @@ class WechatGroupPolicy:
             reply_to_staff_when_mentioned=bool(
                 value.get("reply_to_staff_when_mentioned", True)
             ),
+            native_quote_replies=bool(value.get("native_quote_replies", False)),
+            associate_customer_demands=bool(value.get("associate_customer_demands", False)),
         )
 
     def sender_role(self, sender_id: str) -> SenderRole:

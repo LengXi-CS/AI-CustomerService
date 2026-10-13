@@ -5,6 +5,7 @@ import pytest
 
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig, WechatGroupsProvider
 from fastgpt_assistant.orchestration.engine import AssistantEngine
+from fastgpt_assistant.orchestration.inbound import revoked_message_id
 
 GROUP_ID = "room@chatroom"
 OWNER_ID = "staff-wxid"
@@ -90,6 +91,31 @@ def test_staff_without_mention_is_silent_but_staff_mention_is_allowed() -> None:
     assert engine.route_group_event(ordinary).allowed is False
     assert engine.route_group_event(ordinary).reason == "staff_not_mentioned"
     assert engine.route_group_event(explicit).allowed is True
+
+
+def test_staff_mentioning_a_customer_does_not_handoff_to_the_bot() -> None:
+    engine = _engine()
+    payload = _message(f"{OWNER_ID}:\n@刘英豪\u2005无误已审核")
+    payload["Data"]["AtUserNames"] = ["刘英豪"]
+
+    event = engine.parse_gewe_callback(payload)
+
+    assert event is not None
+    assert event.text == "无误已审核"
+    assert event.mentions == ("刘英豪",)
+    assert event.mentioned_bot is False
+    assert engine.route_group_event(event).reason == "staff_not_mentioned"
+
+
+def test_revoke_system_message_identifies_the_original_event() -> None:
+    xml = (
+        '<sysmsg type="revokemsg"><revokemsg><newmsgid>6647819121452690899</newmsgid>'
+        '</revokemsg></sysmsg>'
+    )
+
+    assert revoked_message_id(xml) == "6647819121452690899"
+    assert revoked_message_id("<sysmsg>") == ""
+    assert revoked_message_id('<sysmsg type="other"/>') == ""
 
 
 def test_unconfigured_group_fails_closed() -> None:

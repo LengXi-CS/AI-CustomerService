@@ -31,6 +31,7 @@ FilterOperator = Literal["eq", "in", "contains"]
 # 会议决议（2026-09-18）：澄清属于标准需求 —— 命中标准需求但信息不足才反问澄清；
 # 非标准需求只做安抚并提醒负责人。二者必须由规划器显式区分，不能靠推断。
 DemandKind = Literal["standard", "non_standard"]
+MessageAct = Literal["request", "statement", "unclear"]
 ATTACHMENT_NAME_FILTER = "attachment_name"
 
 
@@ -170,10 +171,9 @@ class QueryPlan(BaseModel):
     perfectly well-understood demand — see
     ``架构诊断-越改越不如意的根因.md`` 根因 3.
 
-    ``demand_kind`` answers a third, independent question: did this utterance map
-    onto a standard demand at all? It defaults to ``"standard"`` on purpose — an
-    omitted or unparsable value degrades to today's behavior (ask the customer a
-    clarifying question) instead of silently routing a real demand to a human.
+    ``demand_kind`` says whether a request maps onto a standard demand. The
+    independent ``message_act`` says whether the customer made a request at all.
+    Older plans omit ``message_act`` and retain the confidence-based route.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -190,6 +190,7 @@ class QueryPlan(BaseModel):
     intent_confidence: float = Field(ge=0, le=1)
     completeness: float = Field(ge=0, le=1)
     demand_kind: DemandKind = "standard"
+    message_act: MessageAct | None = None
     clarification: QueryClarification | None = None
 
     @model_validator(mode="before")

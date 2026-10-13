@@ -10,7 +10,9 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.0.0",
     "python-multipart>=0.0.9",
+    "tomlkit>=0.13.2,<1",
     "uvicorn[standard]>=0.29.0",
 ]
 
@@ -27,6 +29,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fastgpt_assistant"]
+
+[tool.hatch.build]
+artifacts = ["src/fastgpt_assistant/server/admin_static/**"]
 
 [tool.ruff]
 target-version = "py311"

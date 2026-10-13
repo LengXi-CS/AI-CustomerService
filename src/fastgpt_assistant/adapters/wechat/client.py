@@ -6,9 +6,10 @@ import logging
 import re
 from typing import Any
 from urllib.parse import urlparse
-from xml.sax import saxutils
 
 import httpx
+
+from fastgpt_assistant.core.wechat_quote import TextQuote
 
 logger = logging.getLogger(__name__)
 
@@ -113,28 +114,20 @@ class WechatGeweClient:
         quoted_sender_id: str,
         quoted_chat_id: str,
         quoted_content: str,
+        quoted_sender_name: str = "",
+        quoted_created_at: int = 0,
+        quoted_msg_source: str = "",
+        quoted_str_id: str = "",
+        quoted_imunion_sender_id: str = "",
     ) -> dict[str, Any]:
         """Send WeChat Type-57 native reference quote message."""
-        escaped_content = saxutils.escape(content, {'"': "&quot;", "'": "&apos;"})
-        escaped_quoted = saxutils.escape(quoted_content, {'"': "&quot;", "'": "&apos;"})
-
-        appmsg_xml = (
-            '<appmsg appid="" sdkver="0">'
-            f"<title>{escaped_content}</title>"
-            "<des></des>"
-            "<action>view</action>"
-            "<type>57</type>"
-            "<showtype>0</showtype>"
-            "<refermsg>"
-            "<type>1</type>"
-            f"<svrid>{quoted_msg_id.strip()}</svrid>"
-            f"<fromusr>{quoted_sender_id.strip()}</fromusr>"
-            f"<chatusr>{quoted_chat_id.strip()}</chatusr>"
-            f"<displayname>{quoted_sender_id.strip()}</displayname>"
-            f"<content>{escaped_quoted}</content>"
-            "</refermsg>"
-            "</appmsg>"
-        )
+        appmsg_xml = TextQuote(
+            message_id=quoted_msg_id.strip(), chat_id=quoted_chat_id.strip(),
+            sender_id=quoted_sender_id.strip(), content=quoted_content,
+            sender_name=quoted_sender_name, created_at=quoted_created_at,
+            msg_source=quoted_msg_source, str_id=quoted_str_id,
+            imunion_sender_id=quoted_imunion_sender_id,
+        ).appmsg_xml(content)
         payload = {
             "appId": self.app_id,
             "toWxid": to_wxid.strip(),

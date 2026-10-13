@@ -43,6 +43,7 @@ def _plan(
     *,
     channel: str = "clarify",
     demand_kind: str = "non_standard",
+    message_act: str | None = None,
     intent_confidence: float = 0.9,
     completeness: float = 0.9,
 ) -> QueryPlan:
@@ -53,6 +54,7 @@ def _plan(
         intent_confidence=intent_confidence,
         completeness=completeness,
         demand_kind=demand_kind,
+        message_act=message_act,
     )
 
 
@@ -100,6 +102,39 @@ def test_silence_floor_still_wins_over_soothing() -> None:
     assert decision.kind == "silent"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "郑州仓订单辛苦审核",
+        "发票抬头改成瀚思公司",
+        "货还没到，帮忙催一下",
+        "新合同请法务过目",
+        "这个批次有问题，需要赔付方案",
+    ],
+)
+def test_any_non_standard_request_is_soothed_despite_low_intent_score(text: str) -> None:
+    decision = decide_query_route(
+        _plan(message_act="request", intent_confidence=0.45, completeness=0.30),
+        text,
+    )
+
+    assert decision.kind == "soothe"
+    assert decision.reason == "non_standard_request"
+
+
+@pytest.mark.parametrize("score", [0.45, 0.95])
+def test_status_update_remains_silent_even_with_polite_words_or_high_score(score: float) -> None:
+    for text in ("订单金额23470，已审核", "辛苦了，订单已审核", "已发货，单号XXX"):
+        decision = decide_query_route(_plan(message_act="statement", intent_confidence=score), text)
+        assert decision.kind == "silent", text
+        assert decision.reason == "no_confirmed_request"
+
+
+def test_unclear_message_remains_silent_even_with_high_score() -> None:
+    decision = decide_query_route(_plan(message_act="unclear"), "这个怎么办")
+    assert decision.kind == "silent"
+
+
 def test_contradictory_structured_non_standard_plan_stays_on_the_standard_path() -> None:
     """channel == "structured" means a standard scope/operation WAS matched.
 
@@ -129,6 +164,11 @@ def test_demand_kind_defaults_to_standard_for_legacy_plans() -> None:
 def test_demand_kind_rejects_unknown_values() -> None:
     with pytest.raises(ValueError):
         _plan(demand_kind="maybe")
+
+
+def test_message_act_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError):
+        _plan(message_act="maybe")
 
 
 # --------------------------------------------------------------------------- #
@@ -339,6 +379,30 @@ def test_non_standard_demand_queues_an_owner_reminder(tmp_path) -> None:
     assert reply.owner_notify_text
     assert OWNER not in reply.owner_notify_text  # wxid stays out of the payload
     assert CUSTOMER in reply.owner_notify_text
+
+
+def test_low_scored_non_standard_request_still_queues_owner_reminder(tmp_path) -> None:
+    engine = _engine(
+        _plan(message_act="request", intent_confidence=0.45, completeness=0.30),
+        tmp_path,
+    )
+
+    reply = engine.process_text_query(_event("郑州仓订单辛苦审核"))
+
+    assert reply.channel_used == "soothe"
+    assert reply.owner_notify_text
+    assert CUSTOMER in reply.owner_notify_text
+
+
+def test_high_scored_status_update_does_not_notify_owner(tmp_path) -> None:
+    engine = _engine(_plan(message_act="statement", intent_confidence=0.95), tmp_path)
+
+    reply = engine.process_text_query(_event("辛苦了，订单已审核"))
+
+    assert reply.channel_used == "silent"
+    assert reply.suppress_outbound is True
+    assert not reply.owner_notify_text
+    assert engine.model_client.soothe_calls == []
 
 
 def test_owner_reminder_is_sent_privately_not_into_the_group(tmp_path) -> None:

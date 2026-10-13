@@ -17,6 +17,7 @@ from fastgpt_assistant.core.config import settings
 from fastgpt_assistant.core.models import Deliverable
 from fastgpt_assistant.orchestration.conversation_scheduler import ConversationPoller
 from fastgpt_assistant.orchestration.engine import AssistantEngine, InboundEvent
+from fastgpt_assistant.server.admin import install_admin
 
 logger = logging.getLogger("fastgpt_assistant")
 
@@ -82,38 +83,54 @@ def get_engine() -> AssistantEngine:
 async def lifespan(app: FastAPI):
     """Lifespan event handler initializing engine resources."""
     applied_level = configure_logging()
-    logger.info(
-        "Initializing FastGPT Enterprise Assistant... (log level=%s)",
-        logging.getLevelName(applied_level),
-    )
-    engine = get_engine()
-    # Ensure database exists
-    if not engine.settings.db_path.exists():
-        logger.warning("Database %s does not exist yet", engine.settings.db_path)
+    runtime_status = app.state.runtime_status
+    runtime_status.start(settings)
     global _poller_task, _poller_stop
-    _poller_stop = asyncio.Event()
-    poller = ConversationPoller(
-        engine.conversation_state,
-        engine.process_conversation_task,
-        quiet_window_seconds=engine.settings.conversation_quiet_window_seconds,
-        poll_interval_seconds=engine.settings.conversation_poll_interval_seconds,
-    )
-    _poller_task = asyncio.create_task(poller.run(_poller_stop))
     try:
+        logger.info(
+            "Initializing FastGPT Enterprise Assistant... (log level=%s)",
+            logging.getLevelName(applied_level),
+        )
+        engine = get_engine()
+        engine.conversation_state.issues.recover_interrupted()
+        if not engine.settings.db_path.exists():
+            logger.warning("Database %s does not exist yet", engine.settings.db_path)
+        _poller_stop = asyncio.Event()
+        poller = ConversationPoller(
+            engine.conversation_state,
+            engine.process_conversation_task,
+            quiet_window_seconds=engine.settings.conversation_quiet_window_seconds,
+            poll_interval_seconds=engine.settings.conversation_poll_interval_seconds,
+            reconciler=engine.reconcile_customer_issues,
+        )
+        _poller_task = asyncio.create_task(poller.run(_poller_stop))
+        runtime_status.ready(_poller_task)
         yield
     finally:
-        _poller_stop.set()
-        if _poller_task:
-            await _poller_task
-        _poller_task = None
-        _poller_stop = None
-        logger.info("Shutting down FastGPT Enterprise Assistant...")
+        try:
+            if _poller_stop:
+                _poller_stop.set()
+            if _poller_task:
+                await _poller_task
+        finally:
+            _poller_task = None
+            _poller_stop = None
+            logger.info("Shutting down FastGPT Enterprise Assistant...")
+            runtime_status.stop()
 
 
 app = FastAPI(
     title="FastGPT Enterprise Assistant",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+install_admin(
+    app,
+    groups_path=settings.wechat_groups_config_path,
+    auth_path=settings.admin_auth_path,
+    backup_dir=settings.admin_auth_path.parent / "group-backups",
+    runtime_settings=settings,
 )
 
 
@@ -188,6 +205,13 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
     if not event:
         return {"ret": 200, "msg": "ignored"}
 
+    # GeWe sends revocations and other group system notices as AddMsg. They
+    # are not customer requests. A revocation also cancels its queued work.
+    if event.msg_type >= 10000:
+        if event.is_group and event.msg_type == 10002:
+            engine.revoke_group_message(event)
+        return {"ret": 200, "msg": "ignored", "reason": "system_message"}
+
     # Archive before routing, so a message the group policy then drops (客服没 @
     # 机器人、客户没按要求的 @) still shows up in the group's history. Only
     # configured groups are written; the call is best-effort and never raises.
@@ -221,10 +245,16 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
 
     if event.text:
         if event.is_group and event.sender_role == "customer":
-            receipt = engine.record_conversation_event(event)
+            # Decide semantic demand boundaries before creating durable tasks.
+            # Run the bounded model call off the event loop so other callbacks
+            # and the conversation poller can keep moving.
+            demands = await asyncio.to_thread(engine.split_customer_demands, event.text)
+            receipt = engine.record_conversation_event(event, demands=demands)
             if receipt.duplicate:
                 return {"ret": 200, "msg": "ignored", "reason": "duplicate_event"}
-            if not engine.persist_pending_group_event(event, event_id=receipt.event_id):
+            if not engine.persist_pending_group_event(
+                event, event_id=receipt.event_id, demands=demands
+            ):
                 for task_id in receipt.task_ids or ((receipt.task_id,) if receipt.task_id else ()):
                     engine.conversation_state.set_state(task_id, "blocked")
                 return {"ret": 200, "msg": "ignored", "reason": "payload_unavailable"}
@@ -238,15 +268,20 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
         staff_task_id = ""
         if event.is_group and event.sender_role == "staff":
             receipt = engine.record_conversation_event(event)
+            if receipt.duplicate:
+                return {"ret": 200, "msg": "ignored", "reason": "duplicate_event"}
             staff_task_id = receipt.task_id or ""
-            if not staff_task_id:
-                logger.warning(
-                    "Ignoring staff @bot event without a unique task chat=%s",
+            if staff_task_id:
+                event = replace(event, conversation_task_id=staff_task_id)
+                engine.conversation_state.set_state(staff_task_id, "processing")
+            else:
+                # An explicit staff @bot question is an immediate request even
+                # when there is no customer task to hand back. Keep any
+                # ambiguous human-active tasks untouched and answer this text.
+                logger.info(
+                    "Handling staff @bot question without a linked task chat=%s",
                     event.chat_id,
                 )
-                return {"ret": 200, "msg": "ignored", "reason": "ambiguous_task"}
-            event = replace(event, conversation_task_id=staff_task_id)
-            engine.conversation_state.set_state(staff_task_id, "processing")
         reply = engine.process_text_query(event)
         if not route.shadow:
             # Blocking GeWe sends and the inter-attachment pause run off the event

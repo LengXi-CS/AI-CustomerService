@@ -191,6 +191,40 @@ def test_planner_never_sees_image_confidence_numbers(tmp_path) -> None:
     assert "识别把握" in context
 
 
+def test_staff_direct_question_does_not_inherit_unquoted_customer_image(tmp_path) -> None:
+    engine = _engine(_structured_plan(intent_confidence=0.95, completeness=0.95), tmp_path)
+    _buffer_ambiguous_image(engine)
+
+    reply = engine.process_text_query(
+        replace(
+            _event("查询商品 6976070461130 的信息与关联工厂"),
+            sender_id="wxid_owner",
+            sender_role="staff",
+            conversation_task_id="",
+        )
+    )
+
+    assert reply.channel_used == "structured"
+    assert engine.model_client.image_contexts == [""]
+
+
+def test_staff_direct_question_can_use_explicitly_quoted_customer_image(tmp_path) -> None:
+    engine = _engine(_structured_plan(intent_confidence=0.95, completeness=0.95), tmp_path)
+    _buffer_ambiguous_image(engine)
+
+    engine.process_text_query(
+        replace(
+            _event("这个产品的检测报告"),
+            sender_id="wxid_owner",
+            sender_role="staff",
+            conversation_task_id="",
+            quoted_msg_id="img-1",
+        )
+    )
+
+    assert "6976070460164" in engine.model_client.image_contexts[0]
+
+
 @pytest.mark.parametrize("completeness", [0.0, 0.2, 0.49, 0.79])
 def test_incomplete_structured_lookup_asks_instead_of_answering(
     tmp_path, completeness: float

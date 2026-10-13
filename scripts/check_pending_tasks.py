@@ -15,7 +15,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-TERMINAL_STATES = ("responded", "blocked")
+TERMINAL_STATES = ("responded", "closed", "blocked")
 DEFAULT_DB = Path("data/conversation-state.db")
 
 

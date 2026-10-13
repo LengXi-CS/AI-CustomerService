@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from fastgpt_assistant.core.admin_network import lan_networks
 
 
 class Settings(BaseSettings):
@@ -16,6 +18,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    admin_lan_http_networks: str = Field(
+        default="",
+        validation_alias=AliasChoices("ADMIN_LAN_HTTP_NETWORKS", "EA_ADMIN_LAN_HTTP_NETWORKS"),
+    )
+
+    @field_validator("admin_lan_http_networks")
+    @classmethod
+    def validate_admin_lan_networks(cls, value: str) -> str:
+        return ",".join(str(network) for network in lan_networks(value))
 
     # Server settings
     host: str = Field(
@@ -61,6 +73,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "WECHAT_GROUPS_CONFIG_PATH", "EA_WECHAT_GROUPS_CONFIG_PATH"
         ),
+    )
+
+    admin_auth_path: Path = Field(
+        default=Path("data/admin/auth.json"),
+        validation_alias="ADMIN_AUTH_PATH",
     )
 
     # Provider-neutral chat model settings. The historical DEEPSEEK_* names remain

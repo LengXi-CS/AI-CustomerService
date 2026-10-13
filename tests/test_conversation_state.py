@@ -64,7 +64,7 @@ def test_one_message_can_create_independent_demand_slots(tmp_path) -> None:
     ]
 
 
-def test_staff_message_does_not_guess_when_multiple_tasks_are_open(tmp_path) -> None:
+def test_staff_message_takes_over_multiple_tasks_from_one_customer(tmp_path) -> None:
     store = ConversationStateStore(tmp_path / "conversation-state.db")
     first = store.record_customer_message(
         chat_id="room@chatroom",
@@ -91,8 +91,82 @@ def test_staff_message_does_not_guess_when_multiple_tasks_are_open(tmp_path) -> 
     )
 
     assert staff.task_id is None
+    assert set(staff.task_ids) == {first.task_id, second.task_id}
+    assert store.get_task(first.task_id).state == "human_active"
+    assert store.get_task(second.task_id).state == "human_active"
+    assert store.claim_ready_tasks(
+        now="2026-09-18T01:10:00+00:00", quiet_window_seconds=120
+    ) == []
+
+
+def test_staff_message_does_not_guess_across_multiple_customers(tmp_path) -> None:
+    store = ConversationStateStore(tmp_path / "conversation-state.db")
+    first = store.record_customer_message(
+        chat_id="room@chatroom",
+        customer_id="customer-a",
+        external_event_id="msg-1",
+        received_at="2026-09-18T01:00:00+00:00",
+        text="第一个需求",
+    )
+    second = store.record_customer_message(
+        chat_id="room@chatroom",
+        customer_id="customer-b",
+        external_event_id="msg-2",
+        received_at="2026-09-18T01:00:01+00:00",
+        text="第二个需求",
+    )
+
+    staff = store.record_staff_message(
+        chat_id="room@chatroom",
+        staff_id="staff-a",
+        external_event_id="staff-ambiguous",
+        received_at="2026-09-18T01:00:30+00:00",
+        text="我来看一下",
+        mentioned_bot=False,
+    )
+
+    assert staff.task_id is None
+    assert staff.task_ids == ()
     assert store.get_task(first.task_id).state == "waiting_quiet"
     assert store.get_task(second.task_id).state == "waiting_quiet"
+
+
+def test_revoked_customer_message_closes_all_its_pending_demand_slots(tmp_path) -> None:
+    store = ConversationStateStore(tmp_path / "conversation-state.db")
+    original = store.record_customer_message(
+        chat_id="room@chatroom",
+        customer_id="customer-a",
+        external_event_id="message-1",
+        received_at="2026-09-18T01:00:00+00:00",
+        text="查询商品；查询工厂",
+        demand_count=2,
+    )
+    unrelated = store.record_customer_message(
+        chat_id="room@chatroom",
+        customer_id="customer-a",
+        external_event_id="message-2",
+        received_at="2026-09-18T01:00:01+00:00",
+        text="另一条消息",
+    )
+
+    assert store.close_revoked_message(
+        chat_id="other@chatroom", external_event_id="message-1"
+    ) == ()
+    assert set(
+        store.close_revoked_message(
+            chat_id="room@chatroom", external_event_id="message-1"
+        )
+    ) == set(original.task_ids)
+    assert store.close_revoked_message(
+        chat_id="room@chatroom", external_event_id="message-1"
+    ) == ()
+    assert all(store.get_task(task_id).state == "closed" for task_id in original.task_ids)
+    assert [
+        task.task_id
+        for task in store.claim_ready_tasks(
+            now="2026-09-18T01:10:00+00:00", quiet_window_seconds=120
+        )
+    ] == [unrelated.task_id]
 
 
 def test_duplicate_external_event_does_not_extend_window(tmp_path) -> None:

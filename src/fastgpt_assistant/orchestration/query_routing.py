@@ -52,19 +52,21 @@ def decide_query_route(
 ) -> QueryRouteDecision:
     """Map a validated plan to one of five safe outbound behaviors.
 
-    The planner's signals are read as three independent gates, applied in a
-    fixed precedence order:
+    The planner's signals are read as independent gates in a fixed order:
 
-    1. ``intent_confidence`` decides whether we may act at all. Below
-       ``human_threshold`` we stay silent — we do not know what is wanted, and
-       guessing is worse than not answering. Between the two thresholds we ask a
-       human to confirm, but only after the clarify gates have had their turn.
-    2. ``completeness`` decides whether the request can be executed. A
+    1. ``message_act`` distinguishes a request from a status update or greeting.
+       A non-standard request is acknowledged regardless of how certain the
+       planner is about its specific business intent. An explicit ``unclear``
+       stays silent; older plans that omit the field preserve the old route.
+    2. ``intent_confidence`` gates uncertain standard plans and legacy plans.
+       Below ``human_threshold`` we stay silent. Between the thresholds we ask a
+       human to confirm, after the clarify gates have had their turn.
+    3. ``completeness`` decides whether the request can be executed. A
        structured lookup whose entity is not pinned down produces a
        clarification question for the customer, rather than collapsing into
        silence. That gate is deliberately limited to ``structured``: for
        narrative and direct replies there is no entity to be missing.
-    3. ``demand_kind`` decides whether clarifying is even allowed. Per the
+    4. ``demand_kind`` decides whether clarifying is even allowed. Per the
        2026-09-18 meeting (00:04:37): 澄清属于标准需求, and clarification must
        only fire when a *standard* demand was matched but the customer supplied
        too little information. A non-standard demand gets a soothing
@@ -74,8 +76,9 @@ def decide_query_route(
        exception (a contradictory ``structured`` + ``non_standard`` plan).
 
     **Precedence (fixed; do not reorder casually)**: explicit human request →
-    silence below the intent floor → soothe for non-standard demands → the two
-    clarify gates → medium-intent human assist → normal.
+    silence for statements/unclear messages → soothe for non-standard requests → silence below
+    the intent floor → soothe for legacy non-standard plans → the two clarify
+    gates → medium-intent human assist → normal.
 
     The two clarify gates sit **above** the medium-intent human gate by explicit
     owner decision (2026-09-18): a standard demand that is missing only its
@@ -96,6 +99,16 @@ def decide_query_route(
             reason="explicit_human_request",
             reply_text="请 @ 负责人，由人工客服确认当前问题。",
         )
+
+    if plan.message_act in {"statement", "unclear"}:
+        return QueryRouteDecision(kind="silent", reason="no_confirmed_request")
+
+    if (
+        plan.message_act == "request"
+        and plan.demand_kind == "non_standard"
+        and plan.channel != "structured"
+    ):
+        return QueryRouteDecision(kind="soothe", reason="non_standard_request")
 
     if plan.intent_confidence < human_threshold:
         return QueryRouteDecision(kind="silent", reason="intent_confidence_low")

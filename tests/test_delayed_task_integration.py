@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -36,6 +37,7 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
     captured: list[tuple[str, str, str, str, str]] = []
     outbound: list[str] = []
     def fake_process(event: InboundEvent) -> ReplyDeliverable:
+        assert event.message_id == "wechat-msg-1"
         captured.append(
             (
                 event.text,
@@ -129,3 +131,68 @@ def test_demand_bundle_queries_each_independent_demand_once() -> None:
     assert reply.channel_used == "multi"
     assert "答复：查 SKU 甲" in reply.text
     assert "答复：查 SKU 乙\n还有这个产品的工厂" in reply.text
+
+
+def test_multiline_order_uses_one_model_chosen_task_through_delayed_restore(tmp_path) -> None:
+    message = (
+        "杭州仓--开下单\n"
+        "临近国庆，发货时间和到货时间确认下\n"
+        "杭州仓库3号后正常收货\n\n"
+        "杭州仓地址：\n收货人：袋鼠\n送货上门，注意效期和包装"
+    )
+    store = ConversationStateStore(tmp_path / "conversation-state.db")
+    vault = PayloadVault(generate_payload_vault_key(), tmp_path / "payload-vault.db")
+    engine = object.__new__(AssistantEngine)
+    engine.settings = SimpleNamespace(gewe_app_id="bot-wxid")
+    engine.conversation_state = store
+    engine.payload_vault = vault
+    engine.model_client = SimpleNamespace(split_demands=lambda text: [text])
+    engine.groups_config = WechatGroupsConfig.from_mapping(
+        {
+            "global": {"enabled": True},
+            "groups": [{"group_id": "room@chatroom", "mode": "active"}],
+        }
+    )
+    engine.chat_log = None
+    captured: list[str] = []
+
+    def fake_process(event: InboundEvent) -> ReplyDeliverable:
+        captured.append(event.text)
+        return ReplyDeliverable(text="已处理")
+
+    engine.process_text_query = fake_process
+    engine.dispatch_outbound = lambda **kwargs: DispatchOutcome(sent_text=True)
+    event = InboundEvent(
+        message_id="order-msg",
+        from_user="room@chatroom",
+        to_user="bot-wxid",
+        chat_id="room@chatroom",
+        user_id="customer-a",
+        sender_id="customer-a",
+        sender_role="customer",
+        is_group=True,
+        msg_type=1,
+        text=message,
+    )
+
+    demands = engine.split_customer_demands(event.text)
+    receipt = engine.record_conversation_event(event, demands=demands)
+    assert engine.persist_pending_group_event(event, event_id=receipt.event_id, demands=demands)
+    assert len(receipt.task_ids) == 1
+    assert json.loads(vault.retrieve_text(receipt.event_id))["demands"] == [message]
+
+    task = store.claim_ready_tasks(
+        now=datetime.now(UTC) + timedelta(seconds=121), quiet_window_seconds=120
+    )[0]
+    engine.process_conversation_task(task)
+
+    assert captured == [message]
+    assert store.get_task(task.task_id).state == "responded"
+
+
+def test_invalid_model_segmentation_falls_back_to_one_whole_task() -> None:
+    engine = object.__new__(AssistantEngine)
+    engine.model_client = SimpleNamespace(split_demands=lambda text: ["杭州仓--开下单"])
+    message = "杭州仓--开下单\n杭州仓地址：\n收货人：袋鼠"
+
+    assert engine.split_customer_demands(message) == [message]

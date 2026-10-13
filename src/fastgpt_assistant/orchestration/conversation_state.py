@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from fastgpt_assistant.orchestration.conversation_issues import ConversationIssues
+
 ConversationState = Literal[
     "waiting_quiet",
     "human_active",
@@ -83,6 +85,7 @@ class ConversationStateStore:
         self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self.issues = ConversationIssues(self)
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -149,6 +152,16 @@ class ConversationStateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_conversation_task_events_task
                     ON conversation_task_events(task_id, linked_at);
+                CREATE TABLE IF NOT EXISTS conversation_delivery_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    chat_id TEXT NOT NULL,
+                    text_status TEXT NOT NULL,
+                    text_format TEXT NOT NULL,
+                    message_id TEXT NOT NULL DEFAULT '',
+                    reply_to_message_id TEXT NOT NULL DEFAULT '',
+                    occurred_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -169,6 +182,20 @@ class ConversationStateStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def record_delivery_attempt(
+        self, *, task_id: str, chat_id: str, text_status: str, text_format: str,
+        message_id: str = "", reply_to_message_id: str = "",
+    ) -> None:
+        """Retain delivery receipts, including uncertain sends, without message bodies."""
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT INTO conversation_delivery_attempts "
+                "(task_id, chat_id, text_status, text_format, message_id, "
+                "reply_to_message_id, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task_id, chat_id, text_status, text_format, message_id,
+                 reply_to_message_id, iso_timestamp()),
+            )
 
     def get_task(self, task_id: str) -> ConversationTask | None:
         with self._connection() as conn:
@@ -293,6 +320,30 @@ class ConversationStateStore:
             task_ids=tuple(task_ids),
         )
 
+    def close_revoked_message(self, *, chat_id: str, external_event_id: str) -> tuple[str, ...]:
+        """Close unfinished tasks linked to a revoked customer message."""
+        updated_iso = iso_timestamp()
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT DISTINCT task.task_id FROM conversation_tasks AS task "
+                "JOIN conversation_task_events AS link ON link.task_id = task.task_id "
+                "JOIN conversation_events AS event ON event.event_id = link.event_id "
+                "WHERE event.chat_id = ? AND event.external_event_id = ? "
+                "AND event.sender_role = 'customer' "
+                "AND task.state IN ('waiting_quiet', 'human_active', 'processing')",
+                (chat_id, external_event_id),
+            ).fetchall()
+            task_ids = tuple(row["task_id"] for row in rows)
+            for task_id in task_ids:
+                conn.execute(
+                    "UPDATE conversation_tasks SET state = 'closed', version = version + 1, "
+                    "updated_at = ? WHERE task_id = ?",
+                    (updated_iso, task_id),
+                )
+            self.issues.invalidate(conn, task_ids)
+        return task_ids
+
     def record_staff_message(
         self,
         *,
@@ -302,14 +353,24 @@ class ConversationStateStore:
         received_at: datetime | str,
         text: str,
         mentioned_bot: bool,
+        quoted_msg_id: str = "",
+        precise_issue_target: bool = False,
     ) -> EventReceipt:
-        """Record staff metadata and update the open task's suppression marker."""
+        """Use a quote to select a customer before applying human takeover.
+
+        Ordinary replies take over that customer's open tasks, including text
+        accompanying a quoted order file. An explicit bot mention instead hands
+        back only the uniquely referenced demand. Unresolved quotes must never
+        fall back to an unrelated task just because it is the only open one.
+        """
         received_iso = iso_timestamp(received_at)
         created_iso = iso_timestamp()
         digest, length = content_digest(text)
         event_id = str(uuid.uuid4())
 
         with self._connection() as conn:
+            # Keep target selection and takeover atomic with poller claims.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT event_id FROM conversation_events "
                 "WHERE chat_id = ? AND external_event_id = ?",
@@ -323,28 +384,88 @@ class ConversationStateStore:
                     duplicate=True,
                 )
 
-            # A staff message may affect a task only when the target is
-            # unambiguous.  An @-mention prefers the single human-active task;
-            # otherwise a single open task is enough.  With multiple tasks we
-            # deliberately do nothing instead of moving the newest task by
-            # arrival order.
+            # An ordinary staff reply takes over every open task when they all
+            # belong to one customer. A follow-up message may have created a
+            # second task before the staff replied. Never suppress another
+            # customer's task just because it shares the same group.
+            # An @-mention still requires one task to hand back to the bot.
             open_tasks = conn.execute(
-                "SELECT task_id, state FROM conversation_tasks "
+                "SELECT task_id, customer_id, state, latest_customer_at FROM conversation_tasks "
                 "WHERE chat_id = ? AND state IN "
                 "('waiting_quiet', 'human_active', 'processing') "
                 "ORDER BY updated_at DESC, task_id DESC",
                 (chat_id,),
             ).fetchall()
-            if mentioned_bot:
+            if quoted_msg_id:
+                quote_states = (
+                    "('waiting_quiet','human_active','processing','responded')"
+                    if precise_issue_target
+                    else "('waiting_quiet','human_active','processing')"
+                )
+                quoted_tasks = conn.execute(
+                    "SELECT task.task_id, task.customer_id FROM conversation_tasks AS task "
+                    "JOIN conversation_task_events AS link ON link.task_id = task.task_id "
+                    "JOIN conversation_events AS event ON event.event_id = link.event_id "
+                    "WHERE event.chat_id = ? AND event.external_event_id = ? "
+                    "AND event.sender_role = 'customer' AND task.chat_id = ? "
+                    f"AND task.state IN {quote_states} "
+                    "AND task.latest_customer_at <= ?",
+                    (chat_id, quoted_msg_id, chat_id, received_iso),
+                ).fetchall()
+                if precise_issue_target:
+                    referenced_ids = {row["task_id"] for row in quoted_tasks}
+                    marks = ",".join("?" for _ in referenced_ids)
+                    issue_members = (
+                        {
+                            row["task_id"]
+                            for row in conn.execute(
+                                "SELECT task_id FROM conversation_issue_tasks WHERE issue_id IN "
+                            "(SELECT issue_id FROM conversation_issue_tasks "
+                            f"WHERE task_id IN ({marks}))",
+                                tuple(referenced_ids),
+                            )
+                        }
+                        if referenced_ids
+                        else set()
+                    )
+                    task_ids = (
+                        tuple(
+                            row["task_id"]
+                            for row in open_tasks
+                            if row["task_id"] in referenced_ids | issue_members
+                            and row["latest_customer_at"] <= received_iso
+                        )
+                        if not mentioned_bot or len(quoted_tasks) == 1
+                        else ()
+                    )
+                elif mentioned_bot:
+                    task_ids = (quoted_tasks[0]["task_id"],) if len(quoted_tasks) == 1 else ()
+                else:
+                    quoted_customers = {row["customer_id"] for row in quoted_tasks}
+                    quoted_customer = (
+                        next(iter(quoted_customers)) if len(quoted_customers) == 1 else None
+                    )
+                    task_ids = tuple(
+                        row["task_id"]
+                        for row in open_tasks
+                        if row["customer_id"] == quoted_customer
+                        # A delayed staff callback must not take over a newer demand.
+                        and row["latest_customer_at"] is not None
+                        and row["latest_customer_at"] <= received_iso
+                    )
+            elif mentioned_bot:
                 human_tasks = [row for row in open_tasks if row["state"] == "human_active"]
                 if len(human_tasks) == 1:
-                    task_id = human_tasks[0]["task_id"]
+                    task_ids = (human_tasks[0]["task_id"],)
                 elif len(open_tasks) == 1:
-                    task_id = open_tasks[0]["task_id"]
+                    task_ids = (open_tasks[0]["task_id"],)
                 else:
-                    task_id = None
+                    task_ids = ()
             else:
-                task_id = open_tasks[0]["task_id"] if len(open_tasks) == 1 else None
+                customer_ids = {row["customer_id"] for row in open_tasks}
+                task_ids = (
+                    tuple(row["task_id"] for row in open_tasks) if len(customer_ids) == 1 else ()
+                )
             conn.execute(
                 "INSERT INTO conversation_events "
                 "(event_id, external_event_id, chat_id, sender_id, sender_role, "
@@ -363,16 +484,26 @@ class ConversationStateStore:
                     created_iso,
                 ),
             )
-            if task_id:
-                next_state = "waiting_quiet" if mentioned_bot else "human_active"
+            next_state = "waiting_quiet" if mentioned_bot else "human_active"
+            for task_id in task_ids:
                 conn.execute(
                     "UPDATE conversation_tasks SET state = ?, last_staff_at = ?, "
                     "version = version + 1, "
                     "updated_at = ? WHERE task_id = ?",
                     (next_state, received_iso, created_iso, task_id),
                 )
+            self.issues.invalidate(
+                conn, task_ids, state="open" if mentioned_bot else "human_active",
+                staff_event_id=event_id,
+            )
 
-        return EventReceipt(event_id=event_id, task_id=task_id, accepted=True, duplicate=False)
+        return EventReceipt(
+            event_id=event_id,
+            task_id=task_ids[0] if len(task_ids) == 1 else None,
+            accepted=True,
+            duplicate=False,
+            task_ids=task_ids,
+        )
 
     def set_state(
         self,
@@ -429,6 +560,7 @@ class ConversationStateStore:
         now: datetime | str | None = None,
         quiet_window_seconds: int = 120,
         limit: int = 20,
+        require_issue_chats: tuple[str, ...] = (),
     ) -> list[ConversationTask]:
         """Atomically claim tasks whose customer quiet window has elapsed.
 
@@ -449,15 +581,38 @@ class ConversationStateStore:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT task_id FROM conversation_tasks "
-                "WHERE state = 'waiting_quiet' "
-                "AND latest_customer_at IS NOT NULL "
-                "AND latest_customer_at <= ? "
-                "AND (last_staff_at IS NULL OR last_staff_at < latest_customer_at) "
-                "ORDER BY latest_customer_at ASC LIMIT ?",
-                (cutoff_iso, limit),
+                "SELECT task.task_id,task.chat_id,link.issue_id FROM conversation_tasks task "
+                "LEFT JOIN conversation_issue_tasks link ON link.task_id=task.task_id "
+                "LEFT JOIN conversation_issues issue ON issue.issue_id=link.issue_id "
+                "WHERE task.state='waiting_quiet' AND task.latest_customer_at IS NOT NULL "
+                "AND COALESCE(issue.latest_customer_at,task.latest_customer_at)<=? "
+                "AND (task.last_staff_at IS NULL OR task.last_staff_at<task.latest_customer_at) "
+                "AND (issue.issue_id IS NULL OR (issue.state='open' AND NOT EXISTS "
+                "(SELECT 1 FROM conversation_tasks busy JOIN conversation_issue_tasks member "
+                "ON member.task_id=busy.task_id WHERE member.issue_id=issue.issue_id "
+                "AND busy.state='processing'))) ORDER BY task.latest_customer_at,task.task_id",
+                (cutoff_iso,),
             ).fetchall()
-            task_ids = [row["task_id"] for row in rows]
+            task_ids = []
+            seen_issues = set()
+            for row in rows:
+                issue_id = row["issue_id"]
+                if not issue_id and row["chat_id"] in require_issue_chats:
+                    continue
+                if issue_id and issue_id in seen_issues:
+                    continue
+                task_ids.append(row["task_id"])
+                if issue_id:
+                    seen_issues.add(issue_id)
+                    conn.execute(
+                        "UPDATE conversation_tasks SET state='processing',version=version+1, "
+                        "updated_at=? "
+                        "WHERE state='waiting_quiet' AND task_id IN "
+                        "(SELECT task_id FROM conversation_issue_tasks WHERE issue_id=?)",
+                        (claimed_at, issue_id),
+                    )
+                if len(task_ids) >= limit:
+                    break
             if task_ids:
                 placeholders = ",".join("?" for _ in task_ids)
                 conn.execute(
