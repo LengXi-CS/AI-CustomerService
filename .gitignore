@@ -50,6 +50,7 @@ gewe-AidNet-win64.exe_*/
 
 # 本机业务交付与原始客户资料，不随代码发布
 /outputs/20261015-customer-intake/
+/多模态测试图片/
 
 # OS specific
 Thumbs.db

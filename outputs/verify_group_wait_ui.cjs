@@ -25,11 +25,11 @@ const assert = require('node:assert/strict');
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    const names = ['全国仓- 杭州瀚思医药科技有限公司（对公/预强）[GYS00673]', 'AI客服测试（外部）', '品牌客户对接群'];
+    const names = ['客户协作群 A', '客服演示群', '产品咨询群'];
     let revision = 'a'.repeat(64);
     let groups = names.map((name, index) => ({ group_id: `${100 + index}@chatroom`, group_name: name,
       mode: 'active', require_customer_mention: false, allow_images: true, allow_files: true,
-      owner_id: 'owner', customer_service_ids: ['staff'], bot_aliases: ['瀚思商品助理'],
+      owner_id: 'owner', customer_service_ids: ['staff'], bot_aliases: ['客服助手'],
       reply_to_staff_when_mentioned: true, native_quote_replies: true, associate_customer_demands: true,
       conversation_quiet_window_seconds: index === 2 ? 300 : null }));
     const before = structuredClone(groups);
@@ -76,6 +76,7 @@ const assert = require('node:assert/strict');
     assert.equal(writes[0][0].conversation_quiet_window_seconds, 0);
     assert.deepEqual(writes[0].slice(1), before.slice(1));
     assert.deepEqual({ ...writes[0][0], conversation_quiet_window_seconds: null }, before[0]);
+    assert.doesNotMatch(await card.innerText(), /瀚思|handsin|杭州|GYS00673/i);
     await card.screenshot({ path: 'outputs/group-waits-desktop.png' });
     await first.getByText('跟随默认', { exact: true }).click();
     await card.getByRole('button', { name: '查看并保存等待时间' }).click();
@@ -86,6 +87,7 @@ const assert = require('node:assert/strict');
     await page.locator('.el-message').last().waitFor({ state: 'hidden' });
     await page.setViewportSize({ width: 390, height: 844 });
     await card.scrollIntoViewIfNeeded();
+    assert.doesNotMatch(await card.innerText(), /瀚思|handsin|杭州|GYS00673/i);
     await card.screenshot({ path: 'outputs/group-waits-mobile.png' });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     assert.equal(overflow, false, 'Mobile page must not overflow horizontally');
