@@ -86,8 +86,8 @@ flowchart TD
 需要 Python 3.11–3.13、uv；首次构建管理页还需要 Node.js 22.12+ 与 pnpm 11。
 
 ```powershell
-git clone https://github.com/LengXi-CS/Hansi-AI-CustomerService.git
-cd Hansi-AI-CustomerService
+git clone https://github.com/LengXi-CS/AI-CustomerService.git
+cd AI-CustomerService
 uv sync --extra dev
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_webui.ps1
 ```
