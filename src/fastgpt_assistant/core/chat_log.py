@@ -11,8 +11,9 @@ Three stores live side by side and they deliberately disagree:
 
 Keeping the third store separate is deliberate. The first two are correctness
 mechanisms with tight invariants (idempotency, safe re-parse); this one is an
-archive with opposite properties — append-only, wide rows, unbounded growth, and
-no part in deciding a reply. Folding an archive into either would put a
+archive with opposite properties — append-only, wide rows and unbounded growth.
+It also supplies read-only daily group context; orchestration decisions and
+takeover state still belong to the metadata store. Folding the stores would put a
 read-heavy, ever-growing table on the message hot path.
 
 Scope is enforced by the caller (``AssistantEngine``), not here: only groups
@@ -71,6 +72,8 @@ _MSGTYPE_KINDS: dict[int, ChatMessageKind] = {
     34: "voice",
     43: "video",
     49: "file",
+    42: "other",
+    66: "other",
 }
 
 
@@ -192,6 +195,21 @@ class ChatLogStore:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
+
+    def context_entries(
+        self, chat_id: str, *, start: str, end: str, message_ids: tuple[str, ...] = ()
+    ) -> list[dict]:
+        """Read one group's complete time interval, without media transport fields."""
+        with self._connection() as conn:
+            marks = ",".join("?" for _ in message_ids) or "NULL"
+            rows = conn.execute(
+                "SELECT message_id,sender_id,sender_role,kind,msg_type,text,"
+                "quoted_msg_id,quoted_text,quoted_type,"
+                "occurred_at FROM chat_messages WHERE chat_id=? AND ((occurred_at>=? "
+                f"AND occurred_at<=?) OR message_id IN ({marks})) ORDER BY occurred_at,id",
+                (chat_id, start, end, *message_ids),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     @contextlib.contextmanager
     def _connection(self):

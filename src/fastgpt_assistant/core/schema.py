@@ -75,6 +75,7 @@ ATTACHMENT_FIELDS: dict[str, AttachmentFieldSpec] = {
     "sku_product_front": AttachmentFieldSpec("sku", "产品正面"),
     "sku_product_back_label": AttachmentFieldSpec("sku", "产品背面标签"),
     "sku_packaging_images": AttachmentFieldSpec("sku", "新包装&白底图&背标"),
+    "sku_advertising_images": AttachmentFieldSpec("sku", "广审图"),
     "sku_advertising_files": AttachmentFieldSpec("sku", "广审文件"),
     "batch_report_files": AttachmentFieldSpec("batch_report", "批次检测报告"),
     # Backward-compatible aliases

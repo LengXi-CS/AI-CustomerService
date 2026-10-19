@@ -11,6 +11,7 @@ export interface GroupPolicy {
   reply_to_staff_when_mentioned: boolean
   native_quote_replies: boolean
   associate_customer_demands: boolean
+  conversation_quiet_window_seconds: number | null
 }
 
 export interface GroupSnapshot {
@@ -89,8 +90,29 @@ export interface ConnectionSnapshot {
 export interface ProbeResult { service: ServiceName; level: 'passed' | 'partial' | 'failed'; message: string }
 
 export type TaskState = 'waiting_quiet' | 'processing' | 'human_active' | 'responded' | 'closed' | 'blocked' | 'other'
+export interface DockerStatusSnapshot {
+  checked_at: string
+  status: 'healthy' | 'degraded' | 'unknown'
+  message: string
+  engine: 'running' | 'unavailable' | 'cli_missing' | 'unknown'
+  frpc: {
+    name: string
+    status: 'created' | 'running' | 'paused' | 'restarting' | 'removing' | 'exited' | 'dead' | 'missing' | 'unknown'
+    health: 'healthy' | 'unhealthy' | 'starting' | null
+    started_at: string | null
+    exit_code: number | null
+  }
+}
 export interface RuntimeStatusSnapshot {
   checked_at: string
+  docker?: DockerStatusSnapshot
+  aidnet?: {
+    checked_at: string
+    status: 'healthy' | 'degraded' | 'unknown'
+    message: string
+    app: 'running' | 'stopped' | 'unknown'
+    frpc: 'running' | 'stopped' | 'unknown'
+  }
   service: {
     status: 'starting' | 'healthy' | 'degraded' | 'stopped'
     started_at: string | null

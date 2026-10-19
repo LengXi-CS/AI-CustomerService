@@ -16,12 +16,40 @@ from pydantic import BaseModel, Field
 from fastgpt_assistant.core.config import settings
 from fastgpt_assistant.core.models import Deliverable
 from fastgpt_assistant.orchestration.conversation_scheduler import ConversationPoller
-from fastgpt_assistant.orchestration.engine import AssistantEngine, InboundEvent
+from fastgpt_assistant.orchestration.conversation_state import iso_timestamp
+from fastgpt_assistant.orchestration.engine import AssistantEngine, InboundEvent, event_occurred_at
 from fastgpt_assistant.server.admin import install_admin
 
 logger = logging.getLogger("fastgpt_assistant")
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+@asynccontextmanager
+async def _customer_event_order(chat_id: str, sender_id: str):
+    """Split texts concurrently, but commit them in customer arrival order."""
+    pool = getattr(app.state, "customer_event_order", None)
+    if pool is None:
+        pool = app.state.customer_event_order = {}
+    key = (chat_id, sender_id)
+    previous = pool.get(key)
+    finished = asyncio.get_running_loop().create_future()
+    pool[key] = finished
+
+    def release(_=None):
+        if not finished.done():
+            finished.set_result(None)
+        if pool.get(key) is finished:
+            pool.pop(key, None)
+
+    try:
+        yield previous
+    finally:
+        # Cancelled requests cannot let successors bypass an earlier commit.
+        if previous is not None and not previous.done():
+            previous.add_done_callback(release)
+        else:
+            release()
 
 
 def resolve_log_level(value: str | int | None) -> int:
@@ -93,6 +121,7 @@ async def lifespan(app: FastAPI):
         )
         engine = get_engine()
         engine.conversation_state.issues.recover_interrupted()
+        await asyncio.to_thread(engine.recover_pending_customer_events)
         if not engine.settings.db_path.exists():
             logger.warning("Database %s does not exist yet", engine.settings.db_path)
         _poller_stop = asyncio.Event()
@@ -102,6 +131,7 @@ async def lifespan(app: FastAPI):
             quiet_window_seconds=engine.settings.conversation_quiet_window_seconds,
             poll_interval_seconds=engine.settings.conversation_poll_interval_seconds,
             reconciler=engine.reconcile_customer_issues,
+            quiet_windows_provider=engine.conversation_quiet_windows,
         )
         _poller_task = asyncio.create_task(poller.run(_poller_stop))
         runtime_status.ready(_poller_task)
@@ -204,6 +234,11 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
     event = engine.parse_gewe_callback(body)
     if not event:
         return {"ret": 200, "msg": "ignored"}
+    # Capture arrival once, before segmentation/download can complete out of
+    # order. Archive, context and durable media binding share this timestamp.
+    event = replace(event, raw_payload={
+        **event.raw_payload, "received_at": iso_timestamp(event_occurred_at(event)),
+    })
 
     # GeWe sends revocations and other group system notices as AddMsg. They
     # are not customer requests. A revocation also cancels its queued work.
@@ -216,6 +251,8 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
     # 机器人、客户没按要求的 @) still shows up in the group's history. Only
     # configured groups are written; the call is best-effort and never raises.
     engine.log_group_inbound(event)
+    if event.is_group and engine.groups_config.get(event.chat_id) is not None:
+        engine.record_group_context_event(event)
 
     route = engine.route_group_event(event)
     if not route.allowed:
@@ -248,22 +285,29 @@ async def wechat_callback(request: Request) -> dict[str, Any]:
             # Decide semantic demand boundaries before creating durable tasks.
             # Run the bounded model call off the event loop so other callbacks
             # and the conversation poller can keep moving.
-            demands = await asyncio.to_thread(engine.split_customer_demands, event.text)
-            receipt = engine.record_conversation_event(event, demands=demands)
-            if receipt.duplicate:
-                return {"ret": 200, "msg": "ignored", "reason": "duplicate_event"}
-            if not engine.persist_pending_group_event(
-                event, event_id=receipt.event_id, demands=demands
-            ):
-                for task_id in receipt.task_ids or ((receipt.task_id,) if receipt.task_id else ()):
-                    engine.conversation_state.set_state(task_id, "blocked")
-                return {"ret": 200, "msg": "ignored", "reason": "payload_unavailable"}
-            return {
-                "ret": 200,
-                "msg": "queued",
-                "task_id": receipt.task_id,
-                "task_ids": list(receipt.task_ids),
-            }
+            async with _customer_event_order(event.chat_id, event.sender_id) as previous:
+                prepared = engine.prepare_customer_event(event)
+                if not prepared.accepted:
+                    return {"ret": 200, "msg": "ignored", "reason": prepared.reason}
+                try:
+                    demands = await asyncio.to_thread(engine.split_customer_demands, event.text)
+                    if previous is not None:
+                        await asyncio.shield(previous)
+                    receipt = engine.complete_customer_event(
+                        event, event_id=prepared.event_id, demands=demands,
+                    )
+                    if not receipt.accepted:
+                        return {"ret": 200, "msg": "ignored", "reason": receipt.reason}
+                    return {
+                        "ret": 200,
+                        "msg": "queued",
+                        "task_id": receipt.task_id,
+                        "task_ids": list(receipt.task_ids),
+                    }
+                finally:
+                    # Cancelled callbacks retain their encrypted original; the
+                    # poller recovers it once no live callback owns the event.
+                    engine.release_customer_event(prepared.event_id)
 
         staff_task_id = ""
         if event.is_group and event.sender_role == "staff":

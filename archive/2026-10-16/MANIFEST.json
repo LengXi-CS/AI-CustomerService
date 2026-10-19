@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "archived_at": "2026-10-16T16:37:45.2748820+08:00",
+  "status": "complete",
+  "policy": "移动归档，不删除；运行目录与业务资料保留原位",
+  "files": [
+    {
+      "source": "_cleanup_done.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_cleanup_done.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 10267,
+      "sha256": "58cd10e8283dbb5892da95b29804ec8fc3b518b3c64c6a19d4b563af8e2883a6"
+    },
+    {
+      "source": "_cpolar_now.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_cpolar_now.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 114,
+      "sha256": "0d9da1fb43f86cc672d57bf245b22a431c608d2c1c6179564d148b442c4c264e"
+    },
+    {
+      "source": "_live_query.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_live_query.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 1642,
+      "sha256": "11903e38ab8513d3d5be81f38a62c097435c22504ce1904f9ebe9d68beb61b3d"
+    },
+    {
+      "source": "_star_probe.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_star_probe.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 960,
+      "sha256": "2c8d2cec3a74204970d35936060e6f3523c39e5e1b1806f8fcaa0e264752ac9e"
+    },
+    {
+      "source": "_state_now.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_state_now.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 679,
+      "sha256": "1011b23e01819350da4cc712a1fdffe3c9b837dcaaa7e3c08052c5653013c2f5"
+    },
+    {
+      "source": "_verify_reply.txt",
+      "destination": "archive/2026-10-16/diagnostics/root/_verify_reply.txt",
+      "reason": "2026-09历史诊断输出",
+      "bytes": 1575,
+      "sha256": "f95186984831c9424c21667a2ec70461a7e339dddc06df54865e104dfd447986"
+    },
+    {
+      "source": "scripts/_aliyun_dd.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_aliyun_dd.log",
+      "reason": "历史探针日志",
+      "bytes": 1796,
+      "sha256": "496fd292be78aedd5050f55fcb1a3b38b4f0b517751c37ddb454db72f9af8d7d"
+    },
+    {
+      "source": "scripts/_aliyun_test.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_aliyun_test.log",
+      "reason": "历史探针日志",
+      "bytes": 9716,
+      "sha256": "2fd8e8f4dac4df14e318b4d242dc3d0e394a91a1c9bbd8cebf22311498453467"
+    },
+    {
+      "source": "scripts/_bom_fix.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_bom_fix.log",
+      "reason": "历史探针日志",
+      "bytes": 289,
+      "sha256": "ffcbf3f71c9d9f5a3da99f2eb0c9ce21397cd3686f6af40f9586931c5209d344"
+    },
+    {
+      "source": "scripts/_cli_src.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_cli_src.log",
+      "reason": "历史探针日志",
+      "bytes": 6265,
+      "sha256": "6dd1baeceb83fbfa6f8ddfefd05804864edfa25b4dc87012e3f45133157a8cab"
+    },
+    {
+      "source": "scripts/_dl_frp.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_dl_frp.log",
+      "reason": "历史探针日志",
+      "bytes": 312,
+      "sha256": "a603705e34a69723fdee5efaf52b0b0a85f20432b63ec886a6f3837c4039c83d"
+    },
+    {
+      "source": "scripts/_dl_frp.py",
+      "destination": "archive/2026-10-16/scripts/_dl_frp.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 3525,
+      "sha256": "6a2b4247317f51dc1bd42651b9359d649f0a3b10c10b2fb4f8e7e35248100b8a"
+    },
+    {
+      "source": "scripts/_docker_prereq.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_docker_prereq.log",
+      "reason": "历史探针日志",
+      "bytes": 911,
+      "sha256": "280e3a90ae164d8b64f8f67224ab4de68afd43457b5b5538e1275ca1adddfcef"
+    },
+    {
+      "source": "scripts/_docker_probe.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_docker_probe.log",
+      "reason": "历史探针日志",
+      "bytes": 1260,
+      "sha256": "8bcda8dbaebc37fd2b835aeb82b188c055b7f23af03f1261d1024a6af5b2c541"
+    },
+    {
+      "source": "scripts/_env_probe.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_env_probe.log",
+      "reason": "历史探针日志",
+      "bytes": 1010,
+      "sha256": "90b0a7f2c5404eb33640ea73d9f908fd03526838fc66a5c3748296e7febc8d69"
+    },
+    {
+      "source": "scripts/_frp_cutover_probe.py",
+      "destination": "archive/2026-10-16/scripts/_frp_cutover_probe.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 6332,
+      "sha256": "75a7e1d0b45787d85895ba694a826253963f49367447207fae1637100f5e1b20"
+    },
+    {
+      "source": "scripts/_frp_cutover_verify.py",
+      "destination": "archive/2026-10-16/scripts/_frp_cutover_verify.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 3362,
+      "sha256": "e15e82f8d5a81c4682431aeebbbf1152a200c4a442de58dbfc8167cea0cebf0d"
+    },
+    {
+      "source": "scripts/_frp_input_probe.py",
+      "destination": "archive/2026-10-16/scripts/_frp_input_probe.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 948,
+      "sha256": "84ef4904cd1129a3739511eedb6d7aeb5a55169797abcf7a89424c8ac1fb3d59"
+    },
+    {
+      "source": "scripts/_frp_state_probe.py",
+      "destination": "archive/2026-10-16/scripts/_frp_state_probe.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 2831,
+      "sha256": "71a18072f87665de23766d2266ccebd32403219322caed62d2e63cde0ec57335"
+    },
+    {
+      "source": "scripts/_frpc_apply.py",
+      "destination": "archive/2026-10-16/scripts/_frpc_apply.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 2343,
+      "sha256": "e6609c425dc97fad61d7a1291daa49ad1a40eab8142baeffa5de82d90705ef3a"
+    },
+    {
+      "source": "scripts/_frpc_diag.py",
+      "destination": "archive/2026-10-16/scripts/_frpc_diag.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 3824,
+      "sha256": "486806940c18de1977dfeeebc9ac4123d1a8ee338050e4e6463be7e3f97040e8"
+    },
+    {
+      "source": "scripts/_frpc_dryrun.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_frpc_dryrun.log",
+      "reason": "历史探针日志",
+      "bytes": 2696,
+      "sha256": "4fc172b241d0a42bf8cbbcb5bd5d5774c592af255fef88dec1a6e5e90b87ae02"
+    },
+    {
+      "source": "scripts/_frpc_dryrun2.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_frpc_dryrun2.log",
+      "reason": "历史探针日志",
+      "bytes": 2814,
+      "sha256": "eab7e064fb01b135611400fd01e455a24c0fa5ca19e9697f540725990e2156af"
+    },
+    {
+      "source": "scripts/_frpc_dryrun3.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_frpc_dryrun3.log",
+      "reason": "历史探针日志",
+      "bytes": 5104,
+      "sha256": "ae9e3058ff496f613badd017be967fe9ee70abcae5093d3d4db8371ea379884f"
+    },
+    {
+      "source": "scripts/_frpc_net_probe.py",
+      "destination": "archive/2026-10-16/scripts/_frpc_net_probe.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 3982,
+      "sha256": "bfd30b6e5af3c935b888f8625528c734360bc41d0d5653da655de5ff32f4d25c"
+    },
+    {
+      "source": "scripts/_frps_diag.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_frps_diag.log",
+      "reason": "历史探针日志",
+      "bytes": 301,
+      "sha256": "ddb99c265366a95050c026f3be96232ad09a8546d0068ddeab74aa820b2be63d"
+    },
+    {
+      "source": "scripts/_frps_verify.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_frps_verify.log",
+      "reason": "历史探针日志",
+      "bytes": 552,
+      "sha256": "5062b61ce974920802cf33ade6380819d44d96963e0be77868bc03d8bd161468"
+    },
+    {
+      "source": "scripts/_mirror_test.log",
+      "destination": "archive/2026-10-16/diagnostics/scripts/_mirror_test.log",
+      "reason": "历史探针日志",
+      "bytes": 3458,
+      "sha256": "eee1605102f81f60e605fff6cd688a54ff797264aa34e0b948b2d808aa531a05"
+    },
+    {
+      "source": "scripts/_setup_elevated.ps1",
+      "destination": "archive/2026-10-16/scripts/_setup_elevated.ps1",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 14448,
+      "sha256": "f26ea828fe52fc7b033fd6efa1a857df46dc5667baa163a74beab1b7e16e7aee"
+    },
+    {
+      "source": "scripts/_star_probe.py",
+      "destination": "archive/2026-10-16/scripts/_star_probe.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 1434,
+      "sha256": "106efc99d7e4c25d852d0b33acdd97bbf783276e13e1585fa95eb1bfef52dc12"
+    },
+    {
+      "source": "scripts/_state_now.py",
+      "destination": "archive/2026-10-16/scripts/_state_now.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 1603,
+      "sha256": "c5347e34b096857334cfe346128a196d94953bf5e0812c6e12fce3ac0486d63b"
+    },
+    {
+      "source": "scripts/_verify_reply_text.py",
+      "destination": "archive/2026-10-16/scripts/_verify_reply_text.py",
+      "reason": "无运行或构建引用的一次性历史脚本",
+      "bytes": 3198,
+      "sha256": "b941ed4444e5670c29e5dc9a4f1a5cee058a09d8f3a6eabf3a96a567fc70b63f"
+    },
+    {
+      "source": "outputs/audit_after_restart_20261016.py",
+      "destination": "archive/2026-10-16/outputs/audit_after_restart_20261016.py",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 6289,
+      "sha256": "36ec7602484ab3a74b48a953481537e2f2b870a95e94809aaf196775836e8ed0"
+    },
+    {
+      "source": "outputs/audit_takeover_edges.py",
+      "destination": "archive/2026-10-16/outputs/audit_takeover_edges.py",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 5466,
+      "sha256": "8e4517b78a1d35bf543e3855c6c0a6c352c2e9f6e05dd0f59af1bddb5194bd73"
+    },
+    {
+      "source": "outputs/contact-card-tests.txt",
+      "destination": "archive/2026-10-16/outputs/contact-card-tests.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1647,
+      "sha256": "bb0857d821e8513b9efd4b772f474544e605c7ec259a20dbe67f276b9e206015"
+    },
+    {
+      "source": "outputs/contact-card-tests.xml",
+      "destination": "archive/2026-10-16/outputs/contact-card-tests.xml",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 92634,
+      "sha256": "b5107f1aef77e96c46cfdcf19df4d77352f450d5e4e6fa1e76ff214f78d0c231"
+    },
+    {
+      "source": "outputs/daily-takeover-preview.json",
+      "destination": "archive/2026-10-16/outputs/daily-takeover-preview.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1998,
+      "sha256": "2176bf9769d22d3c4416df7d0ed8d3fcff9af5daa495c62d44986e3a15f36904"
+    },
+    {
+      "source": "outputs/daily-takeover-replay.json",
+      "destination": "archive/2026-10-16/outputs/daily-takeover-replay.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 110,
+      "sha256": "07e7726524a339d2f710a8cee0d4f271800b18607deda70bc6481d95b824687d"
+    },
+    {
+      "source": "outputs/final-repair-tests.txt",
+      "destination": "archive/2026-10-16/outputs/final-repair-tests.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1566,
+      "sha256": "5a9edbf2c93812ec69242fe5e10d0ddffcd3b08e86b0f237e73f4def6bbdd18b"
+    },
+    {
+      "source": "outputs/final-repair-tests.xml",
+      "destination": "archive/2026-10-16/outputs/final-repair-tests.xml",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 84162,
+      "sha256": "da52b48249b6de156fdef014eda754cd2f3cef8ae341d2ae2090b57cc4d0de07"
+    },
+    {
+      "source": "outputs/group-wait-focused.txt",
+      "destination": "archive/2026-10-16/outputs/group-wait-focused.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 11064,
+      "sha256": "6d125d7b36d958da8cafc7cf9db4d7829be2a74194ec7d1134a8a735d06a13c6"
+    },
+    {
+      "source": "outputs/group-wait-ingress-audit.txt",
+      "destination": "archive/2026-10-16/outputs/group-wait-ingress-audit.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 2000,
+      "sha256": "5195726d90dc932f5cd3ae61c2e966e7e261de1f6dfaec0deb6d7641c24c05ae"
+    },
+    {
+      "source": "outputs/ingress-repair-tests.txt",
+      "destination": "archive/2026-10-16/outputs/ingress-repair-tests.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1647,
+      "sha256": "8c6a1112190a38eb6a3a07cd5909fd516bd65fdbb2dc5392abbff6c9fc823440"
+    },
+    {
+      "source": "outputs/ingress-repair-tests.xml",
+      "destination": "archive/2026-10-16/outputs/ingress-repair-tests.xml",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 87729,
+      "sha256": "ca162eaef34d69b40c81d9199857901085175e5b16dfa285da95027b7ec5388b"
+    },
+    {
+      "source": "outputs/post-restart-audit-20261016.md",
+      "destination": "archive/2026-10-16/outputs/post-restart-audit-20261016.md",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 5125,
+      "sha256": "c1db81f54bf909cff10aa0f32f625b326fae9f2b1b75517579e0662d2954954d"
+    },
+    {
+      "source": "outputs/post-restart-audit-results.json",
+      "destination": "archive/2026-10-16/outputs/post-restart-audit-results.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1455,
+      "sha256": "19ca32d02a206fd156f428c14d71ef27a28f8978319377db26139cfe85dc7e36"
+    },
+    {
+      "source": "outputs/post-restart-regression.txt",
+      "destination": "archive/2026-10-16/outputs/post-restart-regression.txt",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 998,
+      "sha256": "d98fc9eb58f157c0a11ce64cb1e1fa59407a39b59523be5ff3b18da7c5494934"
+    },
+    {
+      "source": "outputs/post-restart-regression.xml",
+      "destination": "archive/2026-10-16/outputs/post-restart-regression.xml",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 12959,
+      "sha256": "349342da3a54ae9a1433983e40ae722dada8a3a044d06c2997aa8fe788fc2449"
+    },
+    {
+      "source": "outputs/post-restart-repair-results.json",
+      "destination": "archive/2026-10-16/outputs/post-restart-repair-results.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 1998,
+      "sha256": "4c85f50135ee9474ae04e87f15ba4280194dc0aa14af6f164249bcf6042f7be9"
+    },
+    {
+      "source": "outputs/post-restart-runtime.json",
+      "destination": "archive/2026-10-16/outputs/post-restart-runtime.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 191,
+      "sha256": "8a7803d67990c9627c9c7bb47b1e161def95afc1393be35ecbf92d66c747feb4"
+    },
+    {
+      "source": "outputs/probe_daily_takeover.py",
+      "destination": "archive/2026-10-16/outputs/probe_daily_takeover.py",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 2806,
+      "sha256": "6e4ab742e88d7ee585aa3c41bd962852caf787a47f7534da341ead8c5344c88c"
+    },
+    {
+      "source": "outputs/replay_daily_takeover.py",
+      "destination": "archive/2026-10-16/outputs/replay_daily_takeover.py",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 4402,
+      "sha256": "301130b2633dd9b3828659f2c8c5c742cc11b42de3aa17715b0b262c2b289485"
+    },
+    {
+      "source": "outputs/takeover-audit-20261016.md",
+      "destination": "archive/2026-10-16/outputs/takeover-audit-20261016.md",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 5519,
+      "sha256": "2898c84a04c3929c2c85342b6a6ecfc033a1292eeeb1dc8cdef293c0c98dafeb"
+    },
+    {
+      "source": "outputs/takeover-audit-results.json",
+      "destination": "archive/2026-10-16/outputs/takeover-audit-results.json",
+      "reason": "已由最终基线覆盖的分轮审计与中间验证产物",
+      "bytes": 583,
+      "sha256": "d26da652369de9264c3f338a5ba8c452fc97b705ddb162adb714c3887dce79d8"
+    },
+    {
+      "source": "交接文档.md",
+      "destination": "archive/2026-10-16/docs/交接文档.md",
+      "reason": "长篇历史交接保留，根目录另建当前摘要",
+      "bytes": 109655,
+      "sha256": "c79d1bb902c75d91cdfc205a78cdead14e583a28b17cfed97cb83e7ffe510f22",
+      "original_sha256": "7012f6e53b2c83fc71eda6dcba6051d08264df149aa0cc5f428aa71fb5679efe",
+      "original_bytes": 109646,
+      "changes_after_move": "仅调整指向当前项目现状文档的相对链接"
+    },
+    {
+      "source": "docs/客服回复优化实施计划.md",
+      "destination": "archive/2026-10-16/docs/客服回复优化实施计划.md",
+      "reason": "阶段计划历史记录，当前状态统一入口",
+      "bytes": 11003,
+      "sha256": "6699b675576e6b73366580e39626ae0066dc7b56510489e7c11737e319ffc0dc",
+      "original_sha256": "512e77dfd5590d2c463af39862e2bb1aecef65dda49a10e8b1e1ed9e66111e68",
+      "original_bytes": 10989,
+      "changes_after_move": "仅调整指向当前项目现状文档的相对链接"
+    },
+    {
+      "source": "docs/微信引用回复调研.md",
+      "destination": "archive/2026-10-16/docs/微信引用回复调研.md",
+      "reason": "原生引用实现前的历史研究",
+      "bytes": 8031,
+      "sha256": "de024959c39f5717970142e589a33c27c655b3fe4623e24b157e91308a912d59"
+    },
+    {
+      "source": "Handsin瀚思 Web UI 视觉规范.zip",
+      "destination": "archive/2026-10-16/design/Handsin瀚思 Web UI 视觉规范.zip",
+      "reason": "视觉源包已用于前端资源，保留来源归档",
+      "bytes": 2359273,
+      "sha256": "fa9f7005d50fa0c8f28100e1cfe601c04825737538345195924aacead41a9d37"
+    }
+  ],
+  "original_total_bytes": 2919838,
+  "total_files": 58
+}

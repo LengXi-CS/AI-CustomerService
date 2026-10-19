@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
 
 from fastgpt_assistant.adapters.llm.chat_model import (
+    QUERY_PLANNER_SYSTEM_PROMPT,
     ChatModelClient,
     MultimodalImage,
     MultimodalTaskInput,
     _unwrap_composer_envelope,
 )
+from fastgpt_assistant.core.schema import ATTACHMENT_FIELDS
+
+
+def test_planner_attachment_fields_are_registered_for_the_advertised_scope() -> None:
+    section = QUERY_PLANNER_SYSTEM_PROMPT.split("附件逻辑字段只能", 1)[1]
+    section = section.split("资料类型必须", 1)[0]
+    advertised = re.findall(r"(?m)^- (\w+): (.*(?:\n  [^\n]+)*)", section)
+    assert {scope for scope, _ in advertised} == {"category", "trademark", "factory", "sku"}
+    for scope, field_list in advertised:
+        for name in re.findall(r"\b[a-z][a-z_]*\b", field_list):
+            assert name in ATTACHMENT_FIELDS, f"Planner advertises unknown field: {name}"
+            assert ATTACHMENT_FIELDS[name].scope == scope
 
 
 def _client_with_transport(handler) -> ChatModelClient:
@@ -28,6 +42,73 @@ def _client_with_transport(handler) -> ChatModelClient:
         base_url="https://model.example/v1",
     )
     return client
+
+
+def test_association_receives_daily_context_and_rejects_incomplete_results():
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"links":[]}'}}]})
+
+    client = _client_with_transport(handler)
+    try:
+        with pytest.raises(ValueError, match="incomplete"):
+            client.associate_demands(
+                [{"task_id": "demand"}], [], group_context="早上客服：苏州仓我来核实",
+            )
+    finally:
+        client.close()
+    data = json.loads(captured[0]["messages"][1]["content"])
+    assert data["group_context"] == "早上客服：苏州仓我来核实"
+    assert "evidence_message_ids" in captured[0]["messages"][0]["content"]
+
+
+def test_staff_takeover_protocol_contains_candidates_and_evidence_contract():
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"matches":[]}'}}]})
+
+    client = _client_with_transport(handler)
+    try:
+        assert client.match_staff_takeover(
+            {"message_id": "staff", "text": "好，核对无误今天发出"},
+            [{"task_id": "demand", "message_id": "customer", "text": "苏州仓核对金额"}],
+            "当天本群原话",
+        ) == []
+    finally:
+        client.close()
+    data = json.loads(captured[0]["messages"][1]["content"])
+    assert data["staff"]["text"] == "好，核对无误今天发出"
+    assert data["candidates"][0]["message_id"] == "customer"
+    assert data["group_context"] == "当天本群原话"
+    assert "evidence_message_ids" in captured[0]["messages"][0]["content"]
+
+
+def test_deepseek_classifiers_disable_default_thinking_without_affecting_other_providers():
+    with ChatModelClient(api_key="test", model="deepseek-flash") as client:
+        assert client._classification_options() == {"thinking": {"type": "disabled"}}
+    with ChatModelClient(api_key="test", base_url="https://other.test", model="text") as client:
+        assert client._classification_options() == {}
+
+
+def test_association_rejects_forward_links_instead_of_silently_splitting_issues():
+    def handler(request):
+        links = [
+            {"task_id": "first", "relation": "continue", "target_id": "second", "confidence": 1},
+            {"task_id": "second", "relation": "new", "target_id": "", "confidence": 1},
+        ]
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": json.dumps({"links": links}),
+        }}]})
+
+    with (
+        _client_with_transport(handler) as client,
+        pytest.raises(ValueError, match="future or unknown"),
+    ):
+        client.associate_demands([{"task_id": "first"}, {"task_id": "second"}], [])
 
 
 def test_demand_segmenter_receives_the_whole_multiline_message() -> None:
@@ -552,6 +633,77 @@ def test_reactive_composer_protocol_also_asks_for_plain_text() -> None:
     assert "reactive_reply_composer" in protocol_text
     assert "不要输出 JSON" in protocol_text
     assert "输出严格 JSON" not in protocol_text
+
+
+@pytest.mark.parametrize("with_image", [False, True])
+def test_soothe_model_receives_verbatim_demand_quote_and_configured_actions(with_image) -> None:
+    original = "你好，最后一个酒精还是发60ml的吗，金额1.65？\n" + "附加原话" * 40
+    supplement = "采购说之前已经谈好了"
+    task = MultimodalTaskInput(
+        task_id="soothe-task",
+        user_query=original + "\n" + supplement,
+        customer_messages=(original, supplement),
+        quoted_text="李微发的规格说明",
+        quoted_message_id="quoted-original",
+        quoted_type="image",
+        quoted_context="引用前后相关消息",
+        group_context="其他客户：另一个订单要发票",
+        images=(MultimodalImage("image-1", "msg-1", "image/png", b"image-bytes"),)
+        if with_image else (),
+    )
+
+    def handler(request):
+        payload = json.loads(request.content)
+        content = payload["messages"][-1]["content"]
+        protocol = json.loads(content[0]["text"].split("\n", 2)[1])
+        assert protocol["demand"] == task.user_query
+        assert protocol["reply_context"] == {
+            "original_request": original,
+            "related_customer_messages": [supplement],
+            "allowed_actions": ["反馈核实"],
+        }
+        assert protocol["quote"]["message_id"] == "quoted-original"
+        assert protocol["quote"]["text"] == task.quoted_text
+        assert protocol["quote"]["related_context"] == task.quoted_context
+        assert protocol["group_context"] == task.group_context
+        assert payload["model"] == ("image-model" if with_image else "text-model")
+        assert len(content) == (2 if with_image else 1)
+        return _composer_response("收到，酒精的规格和价格这边帮您反馈核实。")(
+            request
+        )
+
+    client = _client_with_transport(handler)
+    try:
+        reply = client.compose_soothe_reply(
+            task.user_query, task_input=task, allowed_actions=("反馈核实",)
+        )
+    finally:
+        client.close()
+    assert reply == "收到，酒精的规格和价格这边帮您反馈核实。"
+
+
+def test_soothe_without_task_still_supplies_original_request_and_no_assumed_actions() -> None:
+    original = "请核实是不是漏发了\n请按实际情况回复"
+
+    def handler(request):
+        content = json.loads(request.content)["messages"][-1]["content"]
+        protocol = json.loads(content[0]["text"].split("\n", 2)[1])
+        assert protocol["demand"] == original
+        assert protocol["reply_context"] == {
+            "original_request": original,
+            "related_customer_messages": [],
+            "allowed_actions": [],
+        }
+        return _composer_response("收到，您提到的漏发情况我看到了。")(
+            request
+        )
+
+    client = _client_with_transport(handler)
+    try:
+        reply = client.compose_soothe_reply(original)
+    finally:
+        client.close()
+    assert reply == "收到，您提到的漏发情况我看到了。"
 
 
 def test_reply_composer_unwraps_json_envelope_before_the_customer_sees_it() -> None:

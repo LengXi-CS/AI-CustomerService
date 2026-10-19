@@ -211,7 +211,7 @@ async def test_finished_poller_degrades_status_and_records_safe_summary(tmp_path
         monitor.stop()
 
 
-def test_status_requires_login_and_refresh_does_not_write_or_dispatch(tmp_path):
+def test_status_requires_login_and_refresh_does_not_write_or_dispatch(tmp_path, monkeypatch):
     auth = tmp_path / "auth.json"
     configure_admin(auth, "test-password-123")
     env = tmp_path / ".env"
@@ -223,9 +223,25 @@ def test_status_requires_login_and_refresh_does_not_write_or_dispatch(tmp_path):
                   env_path=env, backup_dir=tmp_path / "backups")
     settings = Settings(_env_file=None, db_path=db, conversation_state_db_path=db)
     app.state.runtime_status.start(settings)
+    docker_calls = []
+    aidnet_calls = []
+
+    def docker_snapshot():
+        docker_calls.append(True)
+        return {"status": "degraded", "engine": "unavailable"}
+
+    monkeypatch.setattr(app.state.docker_status, "snapshot", docker_snapshot)
+
+    def aidnet_snapshot():
+        aidnet_calls.append(True)
+        return {"status": "healthy", "app": "running", "frpc": "running"}
+
+    monkeypatch.setattr(app.state.aidnet_status, "snapshot", aidnet_snapshot)
     try:
         client = TestClient(app)
         assert client.get("/api/admin/status").status_code == 401
+        assert docker_calls == []
+        assert aidnet_calls == []
         client.post("/api/admin/login", json={"password": "test-password-123"})
         before = {file.name: file.read_bytes() for file in tmp_path.iterdir() if file.is_file()}
         for _ in range(3):
@@ -234,9 +250,13 @@ def test_status_requires_login_and_refresh_does_not_write_or_dispatch(tmp_path):
             assert response.headers["cache-control"] == "no-store"
             payload = response.json()
             assert payload["tasks"]["total"] == 8
+            assert payload["docker"] == {"status": "degraded", "engine": "unavailable"}
+            assert payload["aidnet"]["app"] == "running"
             assert "private" not in response.text
         after = {file.name: file.read_bytes() for file in tmp_path.iterdir() if file.is_file()}
         assert after == before
+        assert len(docker_calls) == 3
+        assert len(aidnet_calls) == 3
         assert client.post("/api/admin/status").status_code == 405
     finally:
         app.state.runtime_status.stop()
@@ -265,6 +285,8 @@ async def test_real_application_lifespan_wires_monitor_and_cleans_handlers(tmp_p
             issues=SimpleNamespace(recover_interrupted=lambda: None)
         ),
         reconcile_customer_issues=lambda **kwargs: [],
+        recover_pending_customer_events=lambda: None,
+        conversation_quiet_windows=lambda: {},
         process_conversation_task=lambda _: pytest.fail("must not dispatch"),
     )
     monkeypatch.setattr(module, "settings", settings)

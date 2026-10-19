@@ -44,6 +44,13 @@ gewe-AidNet-win64.exe_*/
 # 会话临时产物
 /_*.txt
 
+# 本机归档诊断与回放结果（可能含业务原文，不纳入版本库）
+/archive/*/diagnostics/
+/archive/*/outputs/
+
+# 本机业务交付与原始客户资料，不随代码发布
+/outputs/20261015-customer-intake/
+
 # OS specific
 Thumbs.db
 .DS_Store

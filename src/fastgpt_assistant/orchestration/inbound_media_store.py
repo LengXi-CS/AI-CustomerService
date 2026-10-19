@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,7 +52,7 @@ class InboundMediaStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inbound_media (
@@ -116,7 +117,7 @@ class InboundMediaStore:
         temporary.write_bytes(content)
         temporary.replace(path)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute(
                     """INSERT INTO inbound_media(
                            media_id, message_id, chat_id, sender_id, kind,
@@ -160,7 +161,7 @@ class InboundMediaStore:
         message_id: str,
     ) -> StoredInboundMedia | None:
         """Find media for an original platform message in the message window."""
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """SELECT * FROM inbound_media
                    WHERE chat_id = ? AND sender_id = ? AND message_id = ?""",
@@ -184,7 +185,7 @@ class InboundMediaStore:
         """Keep only media whose source messages remain in a chat's window."""
         normalized_ids = {str(item).strip() for item in message_ids if str(item).strip()}
         removed = 0
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             if normalized_ids:
                 placeholders = ",".join("?" for _ in normalized_ids)
                 rows = connection.execute(

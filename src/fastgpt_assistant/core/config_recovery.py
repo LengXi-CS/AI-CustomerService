@@ -52,6 +52,8 @@ def backup_time(name: str) -> str:
 
 
 def display(value) -> str:
+    if value is None:
+        return "跟随默认"
     if isinstance(value, bool):
         return "开启" if value else "关闭"
     if isinstance(value, list):

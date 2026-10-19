@@ -125,6 +125,13 @@ class PayloadVault:
                 );
                 CREATE INDEX IF NOT EXISTS idx_context_expiry
                     ON encrypted_contexts(expires_at);
+                CREATE TABLE IF NOT EXISTS encrypted_group_messages (
+                    session_id TEXT NOT NULL, message_id TEXT NOT NULL, received_at TEXT NOT NULL,
+                    nonce BLOB NOT NULL, ciphertext BLOB NOT NULL,
+                    PRIMARY KEY(session_id,message_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_group_context_time
+                    ON encrypted_group_messages(session_id,received_at);
                 """
             )
 
@@ -259,6 +266,52 @@ class PayloadVault:
         except (InvalidTag, json.JSONDecodeError) as exc:
             msg = f"Context auth/decode failed for session {session_id}"
             raise PayloadVaultCorruption(msg) from exc
+
+    def store_group_message(self, session_id: str, entry: dict[str, str]) -> None:
+        """Append encrypted context without rewriting or truncating a whole day."""
+        raw = json.dumps(entry, ensure_ascii=False).encode()
+        nonce = secrets.token_bytes(_NONCE_BYTES)
+        message_id = entry["message_id"]
+        encrypted = self.aesgcm.encrypt(nonce, raw, f"{session_id}:{message_id}".encode())
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO encrypted_group_messages VALUES(?,?,?,?,?)",
+                (session_id, message_id, entry["received_at"], nonce, encrypted),
+            )
+
+    def retrieve_group_messages(
+        self, session_id: str, *, start: str = "", end: str = "", message_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """Read a bounded interval or one explicit ID; empty IDs never mean all."""
+        if message_id is not None:
+            if not isinstance(message_id, str) or not message_id.strip():
+                return []
+            message_id = message_id.strip()
+        elif not start or not end:
+            raise ValueError("Group context reads require a time interval or a message ID")
+        with self._connection() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='encrypted_group_messages'"
+            ).fetchone()
+            if not exists:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM encrypted_group_messages WHERE session_id=? "
+                "AND (?='' OR received_at>=?) AND (?='' OR received_at<=?) "
+                "AND (? IS NULL OR message_id=?) ORDER BY received_at,message_id",
+                (session_id, start, start, end, end, message_id, message_id),
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                raw = self.aesgcm.decrypt(
+                    bytes(row["nonce"]), bytes(row["ciphertext"]),
+                    f"{session_id}:{row['message_id']}".encode(),
+                )
+                result.append(json.loads(raw))
+            except (InvalidTag, json.JSONDecodeError) as exc:
+                raise PayloadVaultCorruption("Group context authentication failed") from exc
+        return result
 
     def cleanup_expired(self) -> tuple[int, int]:
         """Purge expired payloads and context records."""

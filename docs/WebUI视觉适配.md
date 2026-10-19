@@ -1,6 +1,6 @@
 # Handsin WebUI 视觉适配
 
-本项目以主目录的 `Handsin瀚思 Web UI 视觉规范.zip` 为视觉来源，使用其中 `index.html`、`styles.css` 和品牌资源，适配管理员工作空间。
+本项目以[WebUI视觉规范源包](<../archive/2026-10-16/design/Handsin瀚思 Web UI 视觉规范.zip>)为视觉来源，使用其中 `index.html`、`styles.css` 和品牌资源，适配管理员工作空间。源包已归档；前端实际使用的品牌资源仍在 `webui/src/assets/`。
 
 ## 统一设计参数
 

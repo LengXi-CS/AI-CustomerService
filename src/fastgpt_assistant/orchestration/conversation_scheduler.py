@@ -30,6 +30,7 @@ class ConversationPoller:
         poll_interval_seconds: int = 30,
         batch_size: int = 20,
         reconciler: Callable | None = None,
+        quiet_windows_provider: Callable[[], dict[str, int]] | None = None,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
@@ -39,6 +40,7 @@ class ConversationPoller:
         self.poll_interval_seconds = poll_interval_seconds
         self.batch_size = batch_size
         self.reconciler = reconciler
+        self.quiet_windows_provider = quiet_windows_provider
 
     async def poll_once(self, *, now: datetime | str | None = None) -> list[str]:
         """Claim and handle one batch, returning successfully handed-off IDs."""
@@ -52,6 +54,8 @@ class ConversationPoller:
         tasks = self.store.claim_ready_tasks(
             now=now,
             quiet_window_seconds=self.quiet_window_seconds,
+            quiet_windows_by_chat=(self.quiet_windows_provider()
+                                   if self.quiet_windows_provider else None),
             limit=self.batch_size,
             require_issue_chats=require_issue_chats,
         )

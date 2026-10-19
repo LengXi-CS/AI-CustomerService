@@ -36,6 +36,9 @@ class GroupEdit(BaseModel):
     reply_to_staff_when_mentioned: StrictBool = True
     native_quote_replies: StrictBool = False
     associate_customer_demands: StrictBool = False
+    conversation_quiet_window_seconds: int | None = Field(
+        default=None, ge=0, le=86400, strict=True
+    )
 
     @field_validator("customer_service_ids", "bot_aliases")
     @classmethod
@@ -290,6 +293,12 @@ class GroupConfigStore:
             row = previous.get(group.group_id, tomlkit.table())
             defaults = GroupEdit(group_id=group.group_id).model_dump()
             for key, value in group.model_dump().items():
+                if (key == "conversation_quiet_window_seconds" and key not in group.model_fields_set
+                        and group.group_id in previous):
+                    continue
+                if value is None:
+                    row.pop(key, None)
+                    continue
                 if key in row and row[key] == value:
                     continue
                 if group.group_id in previous and key not in row and value == defaults[key]:

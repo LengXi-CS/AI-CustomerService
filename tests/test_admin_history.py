@@ -96,6 +96,27 @@ def restore_request(preview):
     )
 
 
+def test_group_wait_history_and_legacy_backup_restore(system):
+    journal, groups, _, _, recovery = system
+    snapshot = groups.snapshot()
+    request = SaveGroupsRequest(
+        revision=snapshot["revision"], global_enabled=snapshot["global_enabled"],
+        groups=snapshot["groups"],
+    )
+    request.groups[0].conversation_quiet_window_seconds = 0
+    saved = groups.save(request)
+    assert "groups.conversation_quiet_window_seconds" in groups.changed_fields(
+        (groups.backup_dir / saved["backup_id"]).read_bytes(), groups.path.read_bytes()
+    )
+    assert journal.list()["items"][0]["status"] == "applied"
+    preview = recovery.preview("groups", BackupSelection(backup_id=saved["backup_id"]))
+    change = next(item for item in preview["changes"]
+                  if item["field"] == "groups.conversation_quiet_window_seconds")
+    assert change["before"] == "0" and change["after"] == "跟随默认"
+    recovery.restore("groups", restore_request(preview))
+    assert groups.snapshot()["groups"][0]["conversation_quiet_window_seconds"] is None
+
+
 def group_change(groups):
     snapshot = groups.snapshot()
     request = SaveGroupsRequest(

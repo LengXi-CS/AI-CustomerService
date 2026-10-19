@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Refresh, Monitor, Timer, Warning, ArrowRight } from '@element-plus/icons-vue'
+import { Refresh, Monitor, Timer, Warning, ArrowRight, Box } from '@element-plus/icons-vue'
 import { api, ApiError, type RuntimeStatusSnapshot, type TaskState } from './api'
 
 const props = defineProps<{ active: boolean }>()
@@ -59,6 +59,18 @@ const duration = computed(() => {
 })
 const labels = { starting: '正在启动', healthy: '本地服务正常', degraded: '需要检查', stopped: '服务已停止' }
 const statusType = computed(() => snapshot.value?.service.status === 'healthy' ? 'success' : 'warning')
+const docker = computed(() => snapshot.value?.docker)
+const aidnet = computed(() => snapshot.value?.aidnet)
+const processLabels = { running: '运行中', stopped: '未运行', unknown: '未确认' }
+const aidnetStatusType = computed(() => aidnet.value?.status === 'healthy' ? 'success' : aidnet.value?.status === 'degraded' ? 'danger' : 'warning')
+const dockerEngineLabels = { running: '已连接', unavailable: '无法连接', cli_missing: '无法检测', unknown: '未确认' }
+const containerLabels = { created: '未启动', running: '运行中', paused: '已暂停', restarting: '重启中', removing: '移除中', exited: '已停止', dead: '异常退出', missing: '未找到', unknown: '未确认' }
+const dockerStatusType = computed(() => docker.value?.status === 'healthy' ? 'success' : docker.value?.status === 'degraded' ? 'danger' : 'warning')
+const containerHealth = computed(() => {
+  if (!docker.value || docker.value.frpc.status !== 'running') return '未检测'
+  const health = docker.value.frpc.health
+  return health === 'healthy' ? '通过' : health === 'unhealthy' ? '未通过' : health === 'starting' ? '启动中' : '未配置'
+})
 const scopes = { reply: '回复策略', connections: '模型与连接' }
 const states: { key: TaskState; label: string; help: string }[] = [
   { key: 'waiting_quiet', label: '等待静默', help: '等待客户停止发言后处理' },
@@ -72,7 +84,7 @@ const states: { key: TaskState; label: string; help: string }[] = [
 
 <template>
   <div class="content runtime-content">
-    <div class="page-heading"><div><span class="eyebrow">SERVICE STATUS</span><h1>运行状态</h1><p>查看服务、任务与配置生效情况，掌握当前处理状态。</p></div><el-button :icon="Refresh" :loading="loading" @click="refresh">刷新状态</el-button></div>
+    <div class="page-heading"><div><span class="eyebrow">SERVICE STATUS</span><h1>运行状态</h1><p>查看服务、Docker、AidNet、任务与配置生效情况，掌握当前处理状态。</p></div><el-button :icon="Refresh" :loading="loading" @click="refresh">刷新状态</el-button></div>
     <div class="runtime-refresh"><span>最近成功读取：{{ date(snapshot?.checked_at) }}（北京时间）</span><div><span>每 15 秒自动刷新</span><el-switch v-model="automatic" aria-label="自动刷新运行状态" /></div></div>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="error-alert"><template v-if="snapshot">以下保留最近一次成功读取的数据，当前状态尚未确认。</template></el-alert>
     <div v-if="!snapshot" class="runtime-empty"><el-icon><Monitor /></el-icon><p>{{ loading ? '正在读取服务状态…' : '暂未获取运行状态，请刷新重试。' }}</p></div>
@@ -82,6 +94,30 @@ const states: { key: TaskState; label: string; help: string }[] = [
         <div class="policy-status"><span><el-icon><Timer /></el-icon>已运行</span><strong class="runtime-duration">{{ duration }}</strong><p class="policy-help">启动于 {{ date(snapshot.service.started_at) }}</p></div>
         <div class="policy-status"><span>已保存、待重启的配置</span><strong>{{ snapshot.configuration.count ?? '—' }}<small>项参数</small></strong><p class="policy-help">{{ snapshot.configuration.available ? '仅统计回复策略与连接页面开放的参数。' : '部分配置无法读取，待重启总数尚未确认。' }}</p></div>
       </div>
+      <section class="policy-card runtime-docker">
+        <div class="policy-card-heading"><div class="policy-section-title"><el-icon><Box /></el-icon><div><h2>本地 Docker 与回调隧道</h2><p>检查本机 Docker 引擎和 frpc 容器，及时发现回调转发所需的运行环境异常。</p></div></div><el-tag :type="dockerStatusType">{{ docker?.status === 'healthy' ? '运行正常' : docker?.status === 'degraded' ? '需要检查' : '状态待确认' }}</el-tag></div>
+        <el-alert v-if="!docker" title="服务尚未加载 Docker 状态检测，请重启客服服务后刷新本页。" type="warning" :closable="false" show-icon />
+        <template v-else>
+          <el-alert v-if="docker.status !== 'healthy'" :title="docker.message" :type="docker.status === 'degraded' ? 'error' : 'warning'" :closable="false" show-icon class="error-alert" />
+          <div class="runtime-docker-grid">
+            <article><div class="runtime-docker-title"><strong>Docker 引擎</strong><el-tag :type="docker.engine === 'running' ? 'success' : docker.engine === 'unknown' ? 'warning' : 'danger'">{{ dockerEngineLabels[docker.engine] }}</el-tag></div><p>{{ docker.engine === 'running' ? '本机 Docker Linux 引擎可连接。' : docker.engine === 'cli_missing' ? '客服服务未找到 Docker 命令，请检查安装与服务账户环境。' : docker.engine === 'unavailable' ? '请确认 Docker Desktop 已启动，且服务账户有访问权限。' : '当前连接状态尚未确认。' }}</p></article>
+            <article><div class="runtime-docker-title"><strong>frpc 回调转发容器</strong><el-tag :type="docker.frpc.status === 'running' ? (docker.frpc.health === 'unhealthy' ? 'danger' : 'success') : docker.frpc.status === 'unknown' ? 'warning' : 'danger'">{{ containerLabels[docker.frpc.status] }}</el-tag></div><dl><div><dt>容器健康检查</dt><dd>{{ containerHealth }}</dd></div><div><dt>最近启动</dt><dd>{{ date(docker.frpc.started_at) }}</dd></div><div v-if="docker.frpc.status === 'exited' || docker.frpc.status === 'dead'"><dt>退出码</dt><dd>{{ docker.frpc.exit_code ?? '—' }}</dd></div></dl></article>
+          </div>
+          <div class="runtime-docker-footer"><span>最近检测：{{ date(docker.checked_at) }}（北京时间），检测间隔 15 秒。</span><span>容器运行状态不代表公网已连通；公网回调请在 GeWe 中检测。</span></div>
+        </template>
+      </section>
+      <section class="policy-card runtime-aidnet">
+        <div class="policy-card-heading"><div class="policy-section-title"><el-icon><Monitor /></el-icon><div><h2>AidNet 软件</h2><p>检查 AidNet 主程序及它自带的连接进程，区分软件未启动与连接进程异常。</p></div></div><el-tag :type="aidnetStatusType">{{ aidnet?.status === 'healthy' ? '进程运行正常' : aidnet?.status === 'degraded' ? '需要检查' : '状态待确认' }}</el-tag></div>
+        <el-alert v-if="!aidnet" title="服务尚未加载 AidNet 状态检测，请重启客服服务后刷新本页。" type="warning" :closable="false" show-icon />
+        <template v-else>
+          <el-alert v-if="aidnet.status !== 'healthy'" :title="aidnet.message" :type="aidnet.status === 'degraded' ? 'error' : 'warning'" :closable="false" show-icon class="error-alert" />
+          <div class="runtime-docker-grid">
+            <article><div class="runtime-docker-title"><strong>AidNet 主程序</strong><el-tag :type="aidnet.app === 'running' ? 'success' : aidnet.app === 'stopped' ? 'danger' : 'warning'">{{ processLabels[aidnet.app] }}</el-tag></div><p>查看本机 AidNet 软件是否已启动。</p></article>
+            <article><div class="runtime-docker-title"><strong>AidNet 内置连接进程</strong><el-tag :type="aidnet.frpc === 'running' ? 'success' : aidnet.frpc === 'stopped' ? 'danger' : 'warning'">{{ processLabels[aidnet.frpc] }}</el-tag></div><p>仅识别属于 AidNet 的 frpc，独立于 Docker 中的客服回调转发容器。</p></article>
+          </div>
+          <div class="runtime-docker-footer"><span>最近检测：{{ date(aidnet.checked_at) }}（北京时间），检测间隔 15 秒。</span><span>进程运行不代表微信节点已在线；节点连接状态请在 AidNet 或 GeWe 中确认。</span></div>
+        </template>
+      </section>
       <section class="policy-card">
         <div class="policy-card-heading"><div class="policy-section-title"><el-icon><Monitor /></el-icon><div><h2>服务与配置检查</h2><p>检查当前进程、调度器和本地数据库；外部服务连接可在“模型与连接”中单独测试。</p></div></div></div>
         <div class="runtime-checks"><div><span>商品数据库</span><el-tag :type="snapshot.service.product_database_available ? 'success' : 'danger'">{{ snapshot.service.product_database_available ? '可读取' : '不可读取或未初始化' }}</el-tag></div><div><span>任务状态库</span><el-tag :type="snapshot.tasks.available ? 'success' : 'danger'">{{ snapshot.tasks.available ? '可读取' : '暂不可读取' }}</el-tag></div></div>

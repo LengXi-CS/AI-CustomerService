@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fastgpt_assistant.core.admin_auth import COOKIE_NAME, SESSION_TTL, AdminAuth
 from fastgpt_assistant.core.admin_network import lan_http_allowed
+from fastgpt_assistant.core.aidnet_status import AidNetStatus
 from fastgpt_assistant.core.chat_archive_reader import (
     MAX_ID,
     ChatArchiveReader,
@@ -38,6 +39,7 @@ from fastgpt_assistant.core.connection_config import (
     ServiceName,
     probe_connection,
 )
+from fastgpt_assistant.core.docker_status import DockerStatus
 from fastgpt_assistant.core.dotenv_store import EnvironmentDocument
 from fastgpt_assistant.core.group_config_store import (
     ConfigConflict,
@@ -82,6 +84,8 @@ def install_admin(
         reply_store.document, runtime_settings=runtime_settings
     )
     app.state.runtime_status = RuntimeStatus()
+    app.state.docker_status = DockerStatus()
+    app.state.aidnet_status = AidNetStatus()
     recovery = ConfigRecovery(store, reply_store)
     chats = ChatArchiveReader(runtime_settings)
     router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -204,6 +208,8 @@ def install_admin(
         response.headers["Cache-Control"] = "no-store"
         result = app.state.runtime_status.snapshot()
         result["configuration"] = pending_configuration(reply_store, connection_store)
+        result["docker"] = app.state.docker_status.snapshot()
+        result["aidnet"] = app.state.aidnet_status.snapshot()
         if not result["configuration"]["available"] and result["service"]["status"] == "healthy":
             result["service"]["status"] = "degraded"
         return result

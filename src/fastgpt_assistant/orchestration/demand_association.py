@@ -4,6 +4,8 @@ import math
 import re
 import xml.etree.ElementTree as ET
 
+from fastgpt_assistant.core.wechat_message import contact_card_label
+
 ASSOCIATION_WINDOW_SECONDS = 120
 
 _ORDERS = re.compile(
@@ -15,8 +17,10 @@ def order_ids(text: str) -> set[str]:
     return {left or right for left, right in _ORDERS.findall(text)}
 
 
-def association_text(text: str, *, limit: int | None = 1800) -> str:
+def association_text(text: str, *, limit: int | None = 1800, msg_type: object = None) -> str:
     """Give the model attachment descriptions, never transport XML/keys."""
+    if label := contact_card_label(msg_type):
+        return label
     if text.lstrip().startswith("<"):
         try:
             root = ET.fromstring(text)

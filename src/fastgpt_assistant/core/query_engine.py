@@ -166,6 +166,10 @@ PLAN_REJECTION_REASONS = frozenset(
         "invalid_filter",
         "missing_scope",
         "unknown_scope",
+        "unknown_field",
+        "unknown_filter",
+        "scope_entity_conflict",
+        "scope_field_conflict",
     }
 )
 

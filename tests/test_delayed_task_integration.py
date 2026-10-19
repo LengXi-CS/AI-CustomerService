@@ -38,6 +38,7 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
     outbound: list[str] = []
     def fake_process(event: InboundEvent) -> ReplyDeliverable:
         assert event.message_id == "wechat-msg-1"
+        assert event.customer_messages == ("查询 SKU 6976070460164",)
         captured.append(
             (
                 event.text,
@@ -73,12 +74,13 @@ def test_delayed_task_restores_encrypted_text_and_completes(tmp_path) -> None:
         quoted_type="image",
         quoted_media_xml="<img>encrypted-quote-payload</img>",
         quoted_msg_id="quoted-wechat-msg-1",
+        raw_payload={"received_at": (datetime.now(UTC) - timedelta(seconds=121)).isoformat()},
     )
     receipt = engine.record_conversation_event(event)
     assert engine.persist_pending_group_event(event, event_id=receipt.event_id) is True
 
     task = store.claim_ready_tasks(
-        now=datetime.now(UTC) + timedelta(seconds=121),
+        now=datetime.now(UTC),
         quiet_window_seconds=120,
     )[0]
     assert task.task_id == receipt.task_id
@@ -173,6 +175,7 @@ def test_multiline_order_uses_one_model_chosen_task_through_delayed_restore(tmp_
         is_group=True,
         msg_type=1,
         text=message,
+        raw_payload={"received_at": (datetime.now(UTC) - timedelta(seconds=121)).isoformat()},
     )
 
     demands = engine.split_customer_demands(event.text)
@@ -182,7 +185,7 @@ def test_multiline_order_uses_one_model_chosen_task_through_delayed_restore(tmp_
     assert json.loads(vault.retrieve_text(receipt.event_id))["demands"] == [message]
 
     task = store.claim_ready_tasks(
-        now=datetime.now(UTC) + timedelta(seconds=121), quiet_window_seconds=120
+        now=datetime.now(UTC), quiet_window_seconds=120
     )[0]
     engine.process_conversation_task(task)
 

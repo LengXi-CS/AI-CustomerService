@@ -23,6 +23,7 @@ class InboundMediaItem:
     media_id: str
     image_data: bytes | None = None
     mime_type: str = ""
+    actor_id: str = ""
     visual_analysis: dict[str, object] | None = None
     bound_task_ids: set[str] = field(default_factory=set, repr=False)
     timestamp: float = field(default_factory=time.time)
@@ -72,6 +73,7 @@ class ContextBuffer:
         image_data: bytes | None = None,
         mime_type: str = "",
         bound_task_ids: Iterable[str] = (),
+        actor_id: str = "",
     ) -> InboundMediaItem:
         """Store an inbound image/file into the session's sliding window."""
         key = self._session_key(chat_id, sender_id)
@@ -87,6 +89,7 @@ class ContextBuffer:
             media_id=media_id,
             image_data=image_data,
             mime_type=mime_type,
+            actor_id=actor_id,
             bound_task_ids=normalized_task_ids,
         )
         with self._lock:
@@ -164,6 +167,8 @@ class ContextBuffer:
         chat_id: str,
         sender_id: str,
         task_ids: Iterable[str],
+        actor_id: str = "",
+        excluded_message_ids: Iterable[str] = (),
     ) -> int:
         """Bind the current unassigned media batch to one or more tasks.
 
@@ -174,6 +179,7 @@ class ContextBuffer:
         """
 
         normalized_ids = {str(task_id).strip() for task_id in task_ids if str(task_id).strip()}
+        excluded = set(excluded_message_ids)
         if not normalized_ids:
             return 0
         key = self._session_key(chat_id, sender_id)
@@ -181,7 +187,9 @@ class ContextBuffer:
         with self._lock:
             items = self._media_buffer.get(key, [])
             for item in items:
-                if item.bound_task_ids:
+                if item.bound_task_ids or item.msg_id in excluded:
+                    continue
+                if actor_id and item.actor_id and item.actor_id != actor_id:
                     continue
                 item.bound_task_ids.update(normalized_ids)
                 bound += 1

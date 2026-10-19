@@ -115,6 +115,43 @@ def test_media_url_preserves_file_extension(tmp_path) -> None:
     assert deliverable.download_url == "https://public.example/v1/media/med_abc.pdf"
 
 
+@pytest.mark.parametrize("field", ["sku_advertising_images", "advertising_images"])
+def test_sku_advertising_image_query_accepts_canonical_and_legacy_fields(
+    query_executor: SqliteQueryExecutor, field: str,
+) -> None:
+    result = query_executor.execute(QueryPlan(
+        channel="structured",
+        operation="file",
+        scope="sku",
+        entities=[QueryEntity(type="sku", id="6976070461130")],
+        select=[field],
+        response_mode="deliver_files",
+        confidence=1.0,
+    ))
+    assert result["status"] in {"ok", "not_found"}
+    assert result["clarify"] is None
+
+
+def test_product_documents_are_resolved_through_the_sku_category(
+    query_executor: SqliteQueryExecutor,
+) -> None:
+    plan = QueryPlan(
+        channel="structured",
+        operation="file",
+        scope="sku",
+        entities=[QueryEntity(type="sku", id="6976070461130")],
+        select=["product_documents"],
+        response_mode="deliver_files",
+        confidence=1.0,
+    )
+    repaired = _repair_cross_scope_select(plan)
+    assert repaired.operation == "related"
+    assert [relation.name for relation in repaired.relations] == ["sku_to_category"]
+    result = query_executor.execute(plan)
+    assert result["status"] in {"ok", "not_found"}
+    assert result["clarify"] is None
+
+
 def test_related_sku_to_factory_auto_completes_factory_name(
     query_executor: SqliteQueryExecutor,
 ) -> None:

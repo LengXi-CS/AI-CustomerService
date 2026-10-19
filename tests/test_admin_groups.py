@@ -72,6 +72,40 @@ def test_native_quote_switch_survives_admin_save_and_policy_reload(store):
     assert provider.current().get(payload.groups[0].group_id).native_quote_replies is True
 
 
+@pytest.mark.parametrize("value", [-1, 86401, True, 2.5, "60"])
+def test_group_wait_api_schema_rejects_non_integer_or_out_of_range(value):
+    with pytest.raises(ValidationError):
+        GroupEdit(group_id="room@chatroom", conversation_quiet_window_seconds=value)
+
+
+def test_group_wait_override_reset_and_legacy_backup_preserve_other_fields(store):
+    provider = WechatGroupsProvider(store.path)
+    payload = request_for(store)
+    group_id = payload.groups[0].group_id
+    assert payload.groups[0].conversation_quiet_window_seconds is None
+    payload.groups[0].conversation_quiet_window_seconds = 0
+    saved = store.save(payload)
+    assert provider.current().get(group_id).conversation_quiet_window_seconds == 0
+    assert 'future_field = "preserved"' in store.path.read_text(encoding="utf-8")
+    # Older clients that omit the new field must preserve an existing override.
+    current = store.snapshot()
+    legacy = SaveGroupsRequest(
+        revision=current["revision"], global_enabled=current["global_enabled"],
+        groups=[{key: value for key, value in group.items()
+                 if key != "conversation_quiet_window_seconds"} for group in current["groups"]],
+    )
+    legacy.groups[0].group_name = "仅修改群名"
+    store.save(legacy)
+    assert provider.current().get(group_id).conversation_quiet_window_seconds == 0
+    reset = request_for(store)
+    reset.groups[0].conversation_quiet_window_seconds = None
+    store.save(reset)
+    assert provider.current().get(group_id).conversation_quiet_window_seconds is None
+    assert "conversation_quiet_window_seconds" not in store.path.read_text(encoding="utf-8")
+    backup = WechatGroupsProvider(store.backup_dir / saved["backup_id"]).current()
+    assert backup.get(group_id).conversation_quiet_window_seconds is None
+
+
 def test_issue_association_switch_survives_save_and_legacy_backup_restore(store):
     payload = request_for(store)
     assert payload.groups[0].associate_customer_demands is False

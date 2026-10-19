@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -31,6 +33,7 @@ from fastgpt_assistant.core.query_engine import (
 )
 from fastgpt_assistant.core.schema import QueryClarification, QueryEntity, QueryPlan
 from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig, WechatGroupsProvider
+from fastgpt_assistant.core.wechat_message import contact_card_label
 from fastgpt_assistant.core.wechat_quote import TextQuote
 from fastgpt_assistant.orchestration.context_buffer import ContextBuffer
 from fastgpt_assistant.orchestration.conversation_state import (
@@ -50,7 +53,7 @@ from fastgpt_assistant.orchestration.demand_splitter import (
     split_message_demands,
     validate_model_demands,
 )
-from fastgpt_assistant.orchestration.group_context import GroupContextWindow
+from fastgpt_assistant.orchestration.group_context import BEIJING, GroupContextWindow
 from fastgpt_assistant.orchestration.inbound import (
     extract_quote_payload,
     is_bot_mentioned,
@@ -183,6 +186,7 @@ class InboundEvent:
     conversation_task_id: str = ""
     reply_source: TextQuote | None = None
     related_task_ids: tuple[str, ...] = ()
+    customer_messages: tuple[str, ...] = ()
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -275,11 +279,24 @@ def event_occurred_at(event: InboundEvent) -> str | datetime:
 _DEFAULT_CLARIFY_QUESTION = "请问您想查询哪个品牌或产品的具体信息？"
 _CLARIFY_QUERY_MAX_CHARS = 240
 
+_SOOTHE_COMPLETED_ACTION = re.compile(
+    r"(?:已经|已|刚刚|刚)(?:帮您|为您|给您)?"
+    r"(?:核实|确认|修改|发货|安排|转达|通知|反馈|同步|催促)"
+)
+_SOOTHE_PROMISE = re.compile(
+    r"保证|一定(?:会|能|给|帮)|马上(?:解决|处理好)|加急|"
+    r"有结果再(?:同步|回复|通知)|稍后(?:给您)?(?:答复|回复)|"
+    r"(?:\d+|[一二三四五六七八九十两]+)(?:分钟|小时|天)内|"
+    r"(?:今天|明天|今晚|明早).{0,6}(?:发货|送达|到货|解决|处理好)"
+)
+_SOOTHE_HANDOFF_ACTION = re.compile(r"反馈|转达|通知|同步|核实|跟进|催促|催办")
+
 # 资料不足文案的兜底。与安抚文案同理：正常走模型生成，常量只在模型不可用时兜底。
 # 只陈述"没查到 + 已转负责人"，绝不暗示"该记录不存在"。
 INSUFFICIENT_DATA_FALLBACK_REPLY = (
     "抱歉，这份资料我这边暂时没有查到，已经同步给负责人帮您确认，稍后给您答复。"
 )
+INSUFFICIENT_DATA_NO_HANDOFF_REPLY = "抱歉，这份资料我这边暂时没有查到。"
 
 
 def clarify_question(plan: QueryPlan, default: str = _DEFAULT_CLARIFY_QUESTION) -> str:
@@ -514,7 +531,7 @@ class AssistantEngine:
             self.query_executor.media_base_url = origin
 
     def _group_context_for(self, chat_id: str) -> GroupContextWindow | None:
-        """Return the encrypted rolling context for one configured group."""
+        """Return daily context for one configured group."""
         vault = getattr(self, "payload_vault", None)
         if vault is None or not chat_id.endswith("@chatroom"):
             return None
@@ -528,19 +545,21 @@ class AssistantEngine:
                 vault,
                 bot_id=self.settings.gewe_app_id or "fastgpt-bot",
                 group_id=chat_id,
+                archive=getattr(self, "chat_log", None),
             )
             windows[chat_id] = context
         return context
 
     def record_group_context_event(self, event: InboundEvent) -> None:
-        """Persist one safe group message in the rolling 60-message window."""
+        """Persist one safe group message without a message-count cutoff."""
         context = self._group_context_for(event.chat_id)
         if context is None:
             return
         received_at = event.raw_payload.get("received_at")
         if not isinstance(received_at, str) or not received_at.strip():
             received_at = datetime.now(UTC).isoformat()
-        text = event.text.strip()
+        self._record_image_identity(event, received_at=received_at)
+        text = contact_card_label(event.msg_type) or event.text.strip()
         if not text:
             text = "[图片消息]" if event.is_image else f"[message-type:{event.msg_type}]"
         context.append(
@@ -549,13 +568,29 @@ class AssistantEngine:
             received_at=received_at,
             actor_id=event.sender_id or "unknown",
             reply_to_message_id=event.quoted_msg_id,
-            quoted_text=event.quoted_text,
+            quoted_text=association_text(event.quoted_text, msg_type=event.quoted_type),
+            sender_role=event.sender_role,
         )
         media_store = getattr(self, "inbound_media_store", None)
         if media_store is not None:
-            media_store.retain_message_ids(
-                chat_id=event.chat_id,
-                message_ids={entry["message_id"] for entry in context.read()},
+            try:
+                retained = {entry["message_id"] for entry in context.read(at=received_at)}
+                state = getattr(self, "conversation_state", None)
+                if state is not None:
+                    retained.update(state.retained_customer_media_ids(event.chat_id))
+                media_store.retain_message_ids(chat_id=event.chat_id, message_ids=retained)
+            except Exception:
+                # Cleanup must never prevent recording an incoming takeover.
+                logger.exception("Unable to clean up group media chat=%s", event.chat_id)
+
+    def _record_image_identity(self, event: InboundEvent, *, received_at=None) -> None:
+        state = getattr(self, "conversation_state", None)
+        if (state is not None and event.is_group and event.is_image
+                and event.sender_role == "customer" and event.sender_id and event.message_id):
+            state.record_customer_media(
+                chat_id=event.chat_id, customer_id=event.sender_id,
+                external_event_id=event.message_id,
+                received_at=received_at or event_occurred_at(event),
             )
 
     def log_group_inbound(self, event: InboundEvent) -> None:
@@ -787,6 +822,9 @@ class AssistantEngine:
             extract_quote_payload(content_text)
         )
         content_text = clean_text
+        if card_label := contact_card_label(quoted_type):
+            quoted_text = card_label
+            quoted_media_xml = ""
 
         group_policy = self.groups_config.get(from_user) if is_group else None
         sender_role: Literal["customer", "staff"] = (
@@ -858,6 +896,8 @@ class AssistantEngine:
 
     def route_group_event(self, event: InboundEvent) -> GroupEventRoute:
         """Apply the explicit group allow-list and sender policy."""
+        if contact_card_label(event.msg_type):
+            return GroupEventRoute(False, reason="contact_card")
         if not event.is_group:
             return GroupEventRoute(True, reason="private_chat")
         if not self.groups_config.enabled:
@@ -896,11 +936,108 @@ class AssistantEngine:
         logger.info("Semantic demand segmentation produced %d task(s)", len(demands))
         return demands
 
+    def prepare_customer_event(self, event: InboundEvent) -> EventReceipt:
+        """Persist metadata and encrypted original before semantic segmentation."""
+        if contact_card_label(event.msg_type):
+            return EventReceipt("", None, False, False, reason="contact_card")
+        guard, active = self._customer_ingress_registry()
+        with guard:
+            receipt = self.conversation_state.begin_customer_message(
+                chat_id=event.chat_id, customer_id=event.sender_id,
+                external_event_id=event.message_id, received_at=event_occurred_at(event),
+                text=event.text,
+            )
+            if receipt.accepted:
+                if not self.persist_pending_group_event(event, event_id=receipt.event_id):
+                    self.conversation_state.abandon_customer_message(receipt.event_id)
+                    return replace(receipt, accepted=False, reason="payload_unavailable")
+                active[receipt.event_id] = active.get(receipt.event_id, 0) + 1
+            return receipt
+
+    def _customer_ingress_registry(self):
+        # The persisted event survives restart. This process-local registry
+        # only prevents the poller from recovering a callback still running.
+        guard = self.__dict__.setdefault("_customer_ingress_lock", threading.RLock())
+        active = self.__dict__.setdefault("_active_customer_events", {})
+        return guard, active
+
+    def release_customer_event(self, event_id: str) -> None:
+        guard, active = self._customer_ingress_registry()
+        with guard:
+            remaining = active.get(event_id, 0) - 1
+            if remaining > 0:
+                active[event_id] = remaining
+            else:
+                active.pop(event_id, None)
+
+    def complete_customer_event(
+        self, event: InboundEvent, *, event_id: str, demands: list[str]
+    ) -> EventReceipt:
+        """Only expose tasks after their segmented payload is durably available."""
+        guard, _ = self._customer_ingress_registry()
+        with guard:
+            if (self.conversation_state.customer_event_is_pending(event_id)
+                    and not self.persist_pending_group_event(
+                        event, event_id=event_id, demands=demands
+                    )):
+                self.conversation_state.abandon_customer_message(event_id)
+                return EventReceipt(event_id, None, False, False, reason="payload_unavailable")
+            return self.record_conversation_event(event, demands=demands)
+
+    def recover_pending_customer_events(self) -> None:
+        """Recover interrupted arrivals, skipping callbacks still running here."""
+        guard, active = self._customer_ingress_registry()
+        waiting = set()
+        for row in self.conversation_state.pending_customer_events():
+            with guard:
+                key = (row["chat_id"], row["sender_id"])
+                if row["event_id"] in active or key in waiting:
+                    waiting.add(key)
+                    continue
+                # Recovery does no model/network I/O. Serialize it with the
+                # short payload/metadata commit, never with segmentation.
+                self._recover_customer_event(row)
+
+    def _recover_customer_event(self, row: dict) -> None:
+        try:
+            policy = self.groups_config.get(row["chat_id"])
+            if not self.groups_config.enabled or policy is None or policy.mode == "disabled":
+                raise ValueError("Group no longer enabled")
+            raw = (self.payload_vault.retrieve_text(row["event_id"])
+                   if self.payload_vault else None)
+            payload = json.loads(raw) if raw else {}
+            if (payload.get("message_id") != row["external_event_id"]
+                    or payload.get("sender_id") != row["sender_id"]
+                    or not isinstance(payload.get("text"), str) or not payload["text"].strip()):
+                raise ValueError("Pending original unavailable")
+            event = InboundEvent(
+                message_id=row["external_event_id"], from_user=row["chat_id"],
+                to_user=self.settings.gewe_app_id, chat_id=row["chat_id"],
+                user_id=row["sender_id"], sender_id=row["sender_id"], sender_role="customer",
+                is_group=True, msg_type=payload.get("msg_type", 1), text=payload["text"],
+                quoted_msg_id=payload.get("quoted_msg_id", ""),
+                quoted_text=payload.get("quoted_text", ""),
+                quoted_type=payload.get("quoted_type", ""),
+                quoted_media_xml=payload.get("quoted_media_xml", ""),
+                reply_source=TextQuote.from_mapping(payload.get("reply_source")),
+                raw_payload={"received_at": row["received_at"]},
+            )
+            # The original whole message is the safe fallback if shutdown
+            # interrupted segmentation. Saved verified slots stay intact.
+            demands = validate_model_demands(event.text, payload.get("demands")) or [event.text]
+            self.record_conversation_event(event, demands=demands)
+        except Exception:
+            logger.exception("Unable to recover pending customer event id=%s", row["event_id"])
+        finally:
+            self.conversation_state.abandon_customer_message(row["event_id"])
+
     def record_conversation_event(
         self, event: InboundEvent, *, demands: list[str] | None = None
     ) -> EventReceipt:
         """Persist event metadata for quiet-window and human-takeover decisions."""
         self.record_group_context_event(event)
+        if contact_card_label(event.msg_type):
+            return EventReceipt("", None, False, False, reason="contact_card")
         text = event.text or f"[message-type:{event.msg_type}]"
         received_at = event_occurred_at(event)
         if event.sender_role == "staff":
@@ -921,7 +1058,9 @@ class AssistantEngine:
                 "Recorded staff event chat=%s mentioned_bot=%s target_tasks=%s",
                 event.chat_id,
                 event.mentioned_bot,
-                receipt.task_ids or "ambiguous_or_none",
+                receipt.task_ids or self.conversation_state.issues.referenced_tasks(
+                    event.chat_id, event.message_id
+                ) or "ambiguous_or_none",
             )
             return receipt
         validated_demands = validate_model_demands(text, demands) if demands is not None else None
@@ -938,12 +1077,33 @@ class AssistantEngine:
         # Bind that batch now, while the event still has a deterministic task
         # identity; never let later tasks read the whole group media window.
         context_sender = event.chat_id if event.is_group else event.sender_id
-        if hasattr(self, "context_buffer"):
+        if hasattr(self, "context_buffer") and receipt.accepted:
+            # Durable bindings are authoritative. In-memory-only media retains
+            # legacy support; known stale/revoked images cannot be rebound here.
+            cached = self.context_buffer.get_recent_media(event.chat_id, context_sender)
+            recorded = self.conversation_state.recorded_media_ids(
+                event.chat_id, [item.msg_id for item in cached]
+            )
+            for task_id in receipt.task_ids:
+                for message_id in self.conversation_state.issues.message_ids(task_id):
+                    self.context_buffer.bind_media_by_message_id(
+                        chat_id=event.chat_id, sender_id=context_sender,
+                        message_id=message_id, task_id=task_id,
+                    )
             self.context_buffer.bind_pending_media(
                 chat_id=event.chat_id,
                 sender_id=context_sender,
                 task_ids=receipt.task_ids or ((receipt.task_id,) if receipt.task_id else ()),
+                actor_id=event.sender_id,
+                excluded_message_ids=recorded,
             )
+            for task_id in receipt.task_ids:
+                media = self.context_buffer.get_task_media(
+                    chat_id=event.chat_id, sender_id=context_sender, task_id=task_id
+                )
+                self.conversation_state.issues.bind_messages(
+                    event.chat_id, task_id, [item.msg_id for item in media]
+                )
         logger.info(
             "Created demand task(s) chat=%s event=%s task_count=%d",
             event.chat_id,
@@ -988,11 +1148,18 @@ class AssistantEngine:
         refs = self.conversation_state.list_customer_event_refs(task)
         texts = []
         payload = {}
+        contact_count = 0
+        latest_event_id = ""
         for event_id, index in refs:
             raw = self.payload_vault.retrieve_text(event_id)
             if not raw:
                 continue
-            payload = json.loads(raw)
+            item = json.loads(raw)
+            if contact_card_label(item.get("msg_type")):
+                contact_count += 1
+                continue
+            payload = item
+            latest_event_id = event_id
             parts = validate_model_demands(payload.get("text", ""), payload.get("demands"))
             if "demands" not in payload:
                 parts = split_message_demands(payload.get("text", ""))
@@ -1000,16 +1167,40 @@ class AssistantEngine:
                 texts.append(association_text(parts[index]))
         return {
             "task_id": task.task_id,
-            "event_id": refs[-1][0] if refs else "",
+            "event_id": latest_event_id,
             "text": "\n".join(texts),
             "message_id": payload.get("message_id", ""),
             "quoted_msg_id": payload.get("quoted_msg_id", ""),
-            "quoted_text": association_text(payload.get("quoted_text", "")),
+            "quoted_text": association_text(payload.get("quoted_text", ""),
+                                            msg_type=payload.get("quoted_type")),
             "received_at": task.latest_customer_at,
+            "customer_id": task.customer_id,
+            "attachment_message_ids": self.conversation_state.issues.message_ids(task.task_id),
+            "is_contact_card": bool(refs) and contact_count == len(refs),
         }
 
+    def customer_wait_seconds(self, chat_id: str) -> int:
+        policy = self.groups_config.get(chat_id)
+        override = policy.conversation_quiet_window_seconds if policy else None
+        return (override if override is not None
+                else getattr(self.settings, "conversation_quiet_window_seconds", 120))
+
+    def conversation_quiet_windows(self) -> dict[str, int]:
+        return {
+            chat_id: policy.conversation_quiet_window_seconds
+            for chat_id, policy in self.groups_config.groups.items()
+            if policy.conversation_quiet_window_seconds is not None
+        }
+
+    def _conversation_wait_elapsed(self, task: ConversationTask, issue=None) -> bool:
+        latest = issue["latest_customer_at"] if issue else task.latest_customer_at
+        return bool(latest) and datetime.fromisoformat(latest) <= (
+            datetime.now(UTC) - timedelta(seconds=self.customer_wait_seconds(task.chat_id))
+        )
+
     def reconcile_customer_issues(self, *, now=None) -> list[str]:
-        """Associate collected demands before polling; model failure keeps them independent."""
+        """Associate collected demands and resolve staff intervention before polling."""
+        self.recover_pending_customer_events()
         if self.payload_vault is None:
             return []
         chats = [
@@ -1025,7 +1216,19 @@ class AssistantEngine:
             datetime.fromisoformat(iso_timestamp(now)) - timedelta(seconds=window)
         )
         issues = self.conversation_state.issues
-        tasks = issues.unassigned(chats, cutoff)
+        issues.cleanup_association_retries()
+        now_iso = iso_timestamp(now)
+        day_start = datetime.fromisoformat(now_iso).astimezone(BEIJING).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(UTC).isoformat()
+        issues.queue_staff_reviews(chats, since=day_start)
+        cutoffs = {
+            chat_id: iso_timestamp(datetime.fromisoformat(now_iso) - timedelta(
+                seconds=min(ASSOCIATION_WINDOW_SECONDS, self.customer_wait_seconds(chat_id))
+            ))
+            for chat_id in chats
+        }
+        tasks = issues.unassigned(chats, cutoff, now=now_iso, cutoffs_by_chat=cutoffs)
         batches = {}
         for row in tasks:
             batches.setdefault((row["chat_id"], row["customer_id"]), []).append(row)
@@ -1043,32 +1246,70 @@ class AssistantEngine:
                         "quoted_msg_id": "",
                         "received_at": task.latest_customer_at,
                     }
+                if item.get("is_contact_card"):
+                    self.conversation_state.set_state(task.task_id, "closed")
+                    continue
                 items.append(item)
+            if not items:
+                issues.clear_association_retry(chat_id, customer_id)
+                continue
             candidates = []
-            for issue in issues.candidates(chat_id, customer_id):
+            for issue in issues.candidates(chat_id, customer_id, since=day_start):
                 context = []
                 event_ids = set()
-                for member in issues.members(issue["issue_id"])[-4:]:
+                message_ids = set()
+                members = issues.members(issue["issue_id"])
+                if not members:
+                    continue
+                valid_items = []
+                card_count = 0
+                for member in reversed(members):
                     try:
                         item = self._association_item(self.conversation_state.get_task(member))
-                        context.append(item["text"])
-                        event_ids.add(item["event_id"])
+                        if item.get("is_contact_card"):
+                            card_count += 1
+                        else:
+                            valid_items.append(item)
+                            if len(valid_items) == 4:
+                                break
                     except (PayloadVaultCorruption, ValueError, TypeError, KeyError):
                         continue
+                if card_count == len(members):
+                    continue
+                for item in reversed(valid_items):
+                    context.append(item["text"])
+                    event_ids.add(item["event_id"])
+                    message_ids.update([item["message_id"], *item["attachment_message_ids"]])
                 candidates.append(
-                    {**issue, "text": "\n".join(context)[-6000:], "event_ids": list(event_ids)}
+                    {**issue, "text": "\n".join(context)[-6000:], "event_ids": list(event_ids),
+                     "message_ids": list(message_ids)}
                 )
             links = {}
+            group_context = ""
             associator = getattr(getattr(self, "model_client", None), "associate_demands", None)
             if callable(associator) and (len(items) > 1 or candidates):
                 try:
+                    context = self._group_context_for(chat_id)
+                    group_context = context.format_for_message(
+                        message_id=items[-1].get("message_id", ""), at=now_iso,
+                        related_message_ids=tuple(
+                            [i.get("message_id", "") for i in items]
+                            + [mid for candidate in candidates for mid in candidate["message_ids"]]
+                        ),
+                    ) if context else ""
                     links = validated_links(
-                        associator(items, candidates), {i["task_id"] for i in items}
+                        associator(
+                            items, candidates, group_context=group_context,
+                        ),
+                        {i["task_id"] for i in items},
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Demand association unavailable; keeping independent tasks: %s", exc
+                        "Demand association unavailable; postponing customer batch (%s)",
+                        type(exc).__name__,
                     )
+                    issues.defer_association(chat_id, customer_id, now=now_iso)
+                    continue
             known = {candidate["issue_id"]: candidate for candidate in candidates}
             for item in items:
                 proposal = links.get(item["task_id"], {})
@@ -1082,10 +1323,19 @@ class AssistantEngine:
                     left, right = order_ids(item["text"]), order_ids(target["text"])
                     conflict = bool(left and right and not left & right)
                     same_event = item["event_id"] in target.get("event_ids", [])
+                    evidence = proposal.get("evidence_message_ids", [])
+                    semantic_anchor = (
+                        isinstance(evidence, list)
+                        and all(isinstance(key, str) for key in evidence)
+                        and bool(set(target.get("message_ids", [])) & set(evidence))
+                        and item.get("message_id") in evidence
+                        and all(f"message_id={key} " in group_context for key in evidence)
+                    )
                     anchored = (
                         explicit
                         or bool(left & right)
                         or issues.within_window(target, item["received_at"])
+                        or semantic_anchor
                     )
                     if conflict or same_event or not anchored:
                         target = None
@@ -1100,13 +1350,92 @@ class AssistantEngine:
                         **assigned,
                         "text": "\n".join(filter(None, [existing.get("text", ""), item["text"]])),
                         "event_ids": list(set(existing.get("event_ids", [])) | {item["event_id"]}),
+                        "message_ids": list(set(existing.get("message_ids", []))
+                                            | {item.get("message_id", "")}),
                     }
                     known[item["task_id"]] = descriptor
                     known[assigned["issue_id"]] = descriptor
                     for alias, previous in list(known.items()):
                         if previous["issue_id"] == assigned["issue_id"]:
                             known[alias] = descriptor
+            issues.clear_association_retry(chat_id, customer_id)
+        self.reconcile_staff_takeovers(chats, now=now_iso)
         return chats
+
+    def reconcile_staff_takeovers(self, chats: list[str], *, now: str) -> None:
+        """Resolve ambiguous ordinary staff replies off the webhook path."""
+        issues = self.conversation_state.issues
+        matcher = getattr(getattr(self, "model_client", None), "match_staff_takeover", None)
+        for staff in issues.pending_staff_reviews(chats, now=now):
+            if self.conversation_state.has_pending_customer_events(
+                staff["chat_id"], at=staff["received_at"]
+            ):
+                continue
+            candidates = issues.staff_candidates(staff["chat_id"], at=staff["received_at"])
+            if not candidates:
+                issues.apply_staff_review(staff["event_id"], set())
+                continue
+            context = self._group_context_for(staff["chat_id"])
+            if context is None or not callable(matcher):
+                issues.defer_staff_review(staff["event_id"], now=now)
+                continue
+            try:
+                entries = context.read(at=staff["received_at"])
+                staff_entry = next(
+                    (entry for entry in entries
+                     if entry["message_id"] == staff["external_event_id"]),
+                    None,
+                )
+                if staff_entry is None:
+                    raise ValueError("Staff context unavailable")
+                selected = set()
+                # A long day is processed in batches; finish all batches before
+                # releasing the fence, even when a later request times out.
+                for offset in range(0, len(candidates), 24):
+                    items = [self._association_item(task)
+                             for task in candidates[offset:offset + 24]]
+                    items = [item for item in items if not item.get("is_contact_card")]
+                    if not items:
+                        continue
+                    context_text = context.format_for_message(
+                        message_id=staff["external_event_id"], at=staff["received_at"],
+                        related_message_ids=tuple(
+                            message for item in items
+                            for message in [item["message_id"], *item["attachment_message_ids"]]
+                        ),
+                    )
+                    matches = matcher(staff_entry, items, context_text)
+                    if not isinstance(matches, list):
+                        raise ValueError("Invalid staff matching response")
+                    allowed = {item["task_id"]: item for item in items}
+                    seen = set()
+                    for match in matches:
+                        if not isinstance(match, dict) or match.get("task_id") not in allowed:
+                            raise ValueError("Invalid staff matching target")
+                        task_id = match["task_id"]
+                        if task_id in seen:
+                            raise ValueError("Duplicate staff matching target")
+                        seen.add(task_id)
+                        confidence = match.get("confidence")
+                        evidence = match.get("evidence_message_ids")
+                        item = allowed[task_id]
+                        anchors = {item["message_id"], *item["attachment_message_ids"]}
+                        if (
+                            isinstance(confidence, (int, float))
+                            and not isinstance(confidence, bool) and 0.9 <= confidence <= 1
+                            and isinstance(evidence, list)
+                            and all(isinstance(key, str) for key in evidence)
+                            and anchors.intersection(evidence)
+                            and all(f"message_id={key} " in context_text for key in evidence)
+                        ):
+                            selected.add(task_id)
+                applied = issues.apply_staff_review(staff["event_id"], selected)
+                logger.info("Resolved staff takeover chat=%s event=%s target_tasks=%s",
+                            staff["chat_id"], staff["external_event_id"], applied or "none")
+            except Exception as exc:
+                logger.warning("Staff takeover review deferred chat=%s event=%s error=%s",
+                               staff["chat_id"], staff["external_event_id"], type(exc).__name__)
+                issues.defer_staff_review(staff["event_id"], now=now)
 
     def process_conversation_task(self, task: ConversationTask) -> None:
         """Restore one quiet task, query it, and dispatch according to group mode."""
@@ -1129,9 +1458,10 @@ class AssistantEngine:
             else [task.task_id]
         )
         reply_sources = []
+        card_tasks, request_tasks = set(), set()
         try:
             event_refs = [
-                ref
+                (member_id, *ref)
                 for member_id in member_ids
                 for ref in self.conversation_state.list_customer_event_refs(
                     self.conversation_state.get_task(member_id)
@@ -1142,11 +1472,15 @@ class AssistantEngine:
                 task.task_id,
                 len(event_refs),
             )
-            for event_id, demand_index in event_refs:
+            for member_id, event_id, demand_index in event_refs:
                 raw_payload = self.payload_vault.retrieve_text(event_id)
                 if not raw_payload:
                     raise PayloadVaultCorruption(f"Missing delayed payload {event_id}")
                 payload = json.loads(raw_payload)
+                if contact_card_label(payload.get("msg_type")):
+                    card_tasks.add(member_id)
+                    continue
+                request_tasks.add(member_id)
                 original_message_id = payload.get("message_id")
                 latest_message_id = (
                     original_message_id if isinstance(original_message_id, str) else ""
@@ -1176,6 +1510,8 @@ class AssistantEngine:
                     quoted_media_xml if isinstance(quoted_media_xml, str) else ""
                 )
                 latest_quoted_msg_id = quoted_msg_id if isinstance(quoted_msg_id, str) else ""
+                if card_label := contact_card_label(latest_quoted_type):
+                    latest_quoted_text, latest_quoted_media_xml = card_label, ""
                 text = payload.get("text")
                 if isinstance(text, str) and text.strip():
                     if "demands" in payload:
@@ -1203,6 +1539,15 @@ class AssistantEngine:
                 self.conversation_state.issues.finish(issue["issue_id"], state="blocked")
             return
 
+        closed_cards = card_tasks - request_tasks
+        for member_id in closed_cards:
+            self.conversation_state.set_state(member_id, "closed")
+        member_ids = [member_id for member_id in member_ids if member_id not in closed_cards]
+        if task.task_id in closed_cards:
+            if issue:
+                self.conversation_state.issues.finish(issue["issue_id"], state="waiting_quiet")
+            return
+
         if not texts:
             self.conversation_state.set_state(task.task_id, "closed")
             if issue:
@@ -1215,6 +1560,11 @@ class AssistantEngine:
             )
             latest_message_id = latest_reply_source.message_id
             latest_message_type = latest_reply_source.msg_type
+
+        for member_id in member_ids:
+            member = self.conversation_state.get_task(member_id)
+            for message_id in self.conversation_state.issues.message_ids(member_id):
+                self._restore_issue_media(member, message_id)
 
         event = InboundEvent(
             message_id=latest_message_id,
@@ -1234,6 +1584,7 @@ class AssistantEngine:
             quoted_msg_id=latest_quoted_msg_id,
             reply_source=latest_reply_source,
             related_task_ids=tuple(member_ids) if issue else (),
+            customer_messages=tuple(texts),
         )
         soothe_claimed = False
         try:
@@ -1243,7 +1594,11 @@ class AssistantEngine:
                 else self.process_demand_bundle(event, texts)
             )
             current_task = self.conversation_state.get_task(task.task_id)
-            if current_task is None or current_task.state != "processing":
+            if (current_task is None or current_task.state != "processing"
+                    or not self._conversation_wait_elapsed(current_task, issue)
+                    or self.conversation_state.has_pending_customer_events(
+                        task.chat_id, customer_id=task.customer_id
+                    )):
                 logger.info(
                     "Suppressing stale delayed reply task_id=%s state=%s",
                     task.task_id,
@@ -1251,6 +1606,8 @@ class AssistantEngine:
                 )
                 if issue:
                     self.conversation_state.issues.finish(issue["issue_id"], state="waiting_quiet")
+                elif current_task is not None and current_task.state == "processing":
+                    self.conversation_state.set_state(task.task_id, "waiting_quiet")
                 return
             policy = self.groups_config.get(task.chat_id)
             soothe_claimed = bool(
@@ -1300,12 +1657,13 @@ class AssistantEngine:
         context = getattr(self, "context_buffer", None)
         if media_store is None or context is None:
             return
+        context_sender = task.chat_id if task.chat_id.endswith("@chatroom") else task.customer_id
         if context.get_media_by_message_id(
-            chat_id=task.chat_id, sender_id=task.customer_id, message_id=message_id
+            chat_id=task.chat_id, sender_id=context_sender, message_id=message_id
         ):
             context.bind_media_by_message_id(
                 chat_id=task.chat_id,
-                sender_id=task.customer_id,
+                sender_id=context_sender,
                 message_id=message_id,
                 task_id=task.task_id,
             )
@@ -1314,17 +1672,26 @@ class AssistantEngine:
             stored = media_store.find_by_message(
                 chat_id=task.chat_id, sender_id=task.customer_id, message_id=message_id
             )
+            if stored is None and message_id in self.conversation_state.issues.message_ids(
+                task.task_id
+            ):
+                # The transport originally stores group images in a group
+                # bucket. Only a durable task binding authorizes this fallback.
+                stored = media_store.find_by_message(
+                    chat_id=task.chat_id, sender_id=task.chat_id, message_id=message_id
+                )
             if stored:
                 context.push_media(
                     msg_id=message_id,
                     chat_id=task.chat_id,
-                    sender_id=task.customer_id,
+                    sender_id=context_sender,
                     kind=stored.kind,
                     local_path="",
                     media_id=stored.media_id,
                     image_data=media_store.read(stored),
                     mime_type=stored.mime_type,
                     bound_task_ids=(task.task_id,),
+                    actor_id=task.customer_id,
                 )
         except Exception:
             logger.exception("Unable to restore issue media message_id=%s", message_id)
@@ -1336,7 +1703,10 @@ class AssistantEngine:
     ) -> ReplyDeliverable:
         """Process split demands separately and merge outbound text/files once."""
         demands = split_and_merge_demands(messages)
-        replies = [self.process_text_query(replace(event, text=demand)) for demand in demands]
+        replies = [
+            self.process_text_query(replace(event, text=demand, customer_messages=(demand,)))
+            for demand in demands
+        ]
         if not replies:
             return ReplyDeliverable(text="", channel_used="silent", suppress_outbound=True)
 
@@ -1399,6 +1769,7 @@ class AssistantEngine:
 
     def process_image(self, event: InboundEvent) -> bool:
         """Download and buffer one image for deferred model understanding."""
+        self._record_image_identity(event)
         image_data = event.image_data
         if image_data is None:
             msg_data = event.raw_payload.get("Data", {})
@@ -1446,6 +1817,10 @@ class AssistantEngine:
             media_id=media_id,
             image_data=image_data,
             mime_type=mime_type,
+            actor_id=event.sender_id,
+            bound_task_ids=(self.conversation_state.issues.referenced_tasks(
+                event.chat_id, event.message_id
+            ) if getattr(self, "conversation_state", None) is not None else ()),
         )
         if image_data and mime_type:
             try:
@@ -1476,6 +1851,7 @@ class AssistantEngine:
         user_query: str,
         history: list[dict[str, str]] | None = None,
         task_input: MultimodalTaskInput | None = None,
+        allowed_actions: tuple[str, ...] = (),
     ) -> str:
         """Compose the acknowledgement for a non-standard demand.
 
@@ -1497,11 +1873,21 @@ class AssistantEngine:
             return fixed_reply
         try:
             try:
-                composed = self.model_client.compose_soothe_reply(
-                    user_query=user_query,
-                    history=history,
-                    task_input=task_input,
-                )
+                try:
+                    composed = self.model_client.compose_soothe_reply(
+                        user_query=user_query,
+                        history=history,
+                        task_input=task_input,
+                        allowed_actions=allowed_actions,
+                    )
+                except TypeError as exc:
+                    if "allowed_actions" not in str(exc):
+                        raise
+                    composed = self.model_client.compose_soothe_reply(
+                        user_query=user_query,
+                        history=history,
+                        task_input=task_input,
+                    )
             except TypeError as exc:
                 if "task_input" not in str(exc):
                     raise
@@ -1512,8 +1898,19 @@ class AssistantEngine:
         except Exception:
             logger.exception("Soothe reply composition failed; using fallback wording")
             return NON_STANDARD_SOOTHE_REPLY
-        cleaned = clean_wechat_text(composed or "").strip()
-        return cleaned or NON_STANDARD_SOOTHE_REPLY
+        cleaned = " ".join(clean_wechat_text(composed or "").split())
+        if (
+            not cleaned
+            or len(cleaned) > 50
+            or cleaned.startswith(("{", "["))
+            or any(word in cleaned for word in ("？", "?", "请问", "麻烦提供", "麻烦告知"))
+            or _SOOTHE_COMPLETED_ACTION.search(cleaned)
+            or _SOOTHE_PROMISE.search(cleaned)
+            or (not allowed_actions and _SOOTHE_HANDOFF_ACTION.search(cleaned))
+        ):
+            logger.warning("Soothe reply failed wording checks; using acknowledgement fallback")
+            return NON_STANDARD_SOOTHE_REPLY
+        return cleaned
 
     def compose_insufficient_data_text(
         self,
@@ -1592,17 +1989,23 @@ class AssistantEngine:
         standard demand cannot be answered from the archive — never silence, and
         never a fabricated "查询成功" context for the model to pad out.
         """
-        text = self.compose_insufficient_data_text(
-            user_query=user_query,
-            history=history,
-            task_input=task_input,
-        )
         notice = build_owner_notice(
             self.groups_config,
             chat_id=chat_id,
             sender_id=sender_id,
             user_query=user_query,
             reason=reason,
+        )
+        if not self.settings.owner_notify_enabled:
+            notice = ""
+        text = (
+            self.compose_insufficient_data_text(
+                user_query=user_query,
+                history=history,
+                task_input=task_input,
+            )
+            if notice
+            else INSUFFICIENT_DATA_NO_HANDOFF_REPLY
         )
         logger.info(
             "Unanswerable structured lookup: chat=%s reason=%s owner_reminder=%s text=%s",
@@ -1818,7 +2221,7 @@ class AssistantEngine:
             task_id=event.conversation_task_id or None,
         )
 
-        # Select the persisted 60-message window (plus quote ±5 neighborhood)
+        # Select daily group context, retaining original messages for this task
         # before any LLM node runs.  The same snapshot is passed to visual and
         # planning nodes so neither node has to infer task scope from a session.
         group_context = ""
@@ -1827,6 +2230,10 @@ class AssistantEngine:
             group_context = context_window.format_for_message(
                 message_id=event.message_id,
                 current_text=user_query,
+                related_message_ids=tuple(
+                    message_id for task_id in event.related_task_ids
+                    for message_id in self.conversation_state.issues.message_ids(task_id)
+                ),
             )
         task_input = MultimodalTaskInput(
             task_id=event.conversation_task_id,
@@ -1837,6 +2244,7 @@ class AssistantEngine:
             quoted_context=group_context if event.quoted_msg_id else "",
             group_context=group_context,
             history=tuple(dict(item) for item in history),
+            customer_messages=event.customer_messages or (user_query,),
             images=tuple(
                 MultimodalImage(
                     media_id=media.media_id,
@@ -2160,19 +2568,20 @@ class AssistantEngine:
             return ReplyDeliverable(text=question, channel_used="clarify", plan=plan)
         if route.kind == "soothe":
             # 非标准需求：只安抚客户，绝不反问；改由私聊提醒群负责人跟进。
-            soothe_text = self.compose_soothe_text(
-                user_query=user_query,
-                history=history,
-                task_input=task_input,
-            )
-            remember("user", user_query)
-            remember("assistant", soothe_text)
             owner_notice = build_owner_notice(
                 self.groups_config,
                 chat_id=chat_id,
                 sender_id=event.sender_id,
                 user_query=user_query,
+            ) if self.settings.owner_notify_enabled else ""
+            soothe_text = self.compose_soothe_text(
+                user_query=user_query,
+                history=history,
+                task_input=task_input,
+                allowed_actions=("反馈核实",) if owner_notice else (),
             )
+            remember("user", user_query)
+            remember("assistant", soothe_text)
             logger.info(
                 "Non-standard demand routed to soothe: chat=%s owner_reminder=%s text=%s",
                 chat_id,
@@ -2385,22 +2794,24 @@ class AssistantEngine:
             # clarifying question for a non-standard demand.
             remember("user", user_query)
             if plan.demand_kind == "non_standard":
+                owner_notice = build_owner_notice(
+                    self.groups_config,
+                    chat_id=chat_id,
+                    sender_id=event.sender_id,
+                    user_query=user_query,
+                ) if self.settings.owner_notify_enabled else ""
                 soothe = self.compose_soothe_text(
                     user_query=user_query,
                     history=history,
                     task_input=task_input,
+                    allowed_actions=("反馈核实",) if owner_notice else (),
                 )
                 remember("assistant", soothe)
                 return ReplyDeliverable(
                     text=soothe,
                     channel_used="soothe",
                     plan=plan,
-                    owner_notify_text=build_owner_notice(
-                        self.groups_config,
-                        chat_id=chat_id,
-                        sender_id=event.sender_id,
-                        user_query=user_query,
-                    ),
+                    owner_notify_text=owner_notice,
                 )
             question = clarification_reply(user_query, clarify_question(plan))
             remember("assistant", question)

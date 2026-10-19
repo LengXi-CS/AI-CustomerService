@@ -29,6 +29,7 @@ FIELD_LABELS = {
     "groups.reply_to_staff_when_mentioned": "回复客服 @",
     "groups.native_quote_replies": "引用原问题回复",
     "groups.associate_customer_demands": "同一事项只回复一次",
+    "groups.conversation_quiet_window_seconds": "群客户发言后等待时间",
     "conversation_quiet_window_seconds": "客户停止发言后等待时间",
     "conversation_poll_interval_seconds": "任务扫描间隔",
     "attachment_dispatch_interval_seconds": "附件发送间隔",

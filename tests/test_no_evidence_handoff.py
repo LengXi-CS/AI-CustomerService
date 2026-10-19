@@ -22,6 +22,7 @@ from fastgpt_assistant.core.wechat_groups import WechatGroupsConfig
 from fastgpt_assistant.orchestration.context_buffer import ContextBuffer
 from fastgpt_assistant.orchestration.engine import (
     INSUFFICIENT_DATA_FALLBACK_REPLY,
+    INSUFFICIENT_DATA_NO_HANDOFF_REPLY,
     AssistantEngine,
     InboundEvent,
     build_owner_notice,
@@ -306,8 +307,9 @@ def test_private_chat_gets_the_answer_but_no_owner_reminder(tmp_path) -> None:
         _event("6976070460041 的检测报告", chat_id="wxid_customer")
     )
 
-    assert reply.text == HANDOFF_TEXT
+    assert reply.text == INSUFFICIENT_DATA_NO_HANDOFF_REPLY
     assert reply.owner_notify_text == ""
+    assert engine.model_client.calls == []
 
 
 def test_owner_reminder_can_be_disabled_for_no_evidence(tmp_path) -> None:
@@ -318,6 +320,16 @@ def test_owner_reminder_can_be_disabled_for_no_evidence(tmp_path) -> None:
     engine.dispatch_outbound(ROOM, reply)
 
     assert [target for target, _ in engine.wechat.sent] == [ROOM]
+    assert reply.text == INSUFFICIENT_DATA_NO_HANDOFF_REPLY
+    assert reply.owner_notify_text == ""
+
+
+def test_missing_group_owner_does_not_claim_a_handoff(tmp_path) -> None:
+    engine = _wired_engine(tmp_path, _no_evidence())
+    engine.groups_config = _groups_config(owner="")
+    reply = engine.process_text_query(_event("查一下产品资料"))
+    assert reply.text == INSUFFICIENT_DATA_NO_HANDOFF_REPLY
+    assert reply.owner_notify_text == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +355,10 @@ def _rejected(reason: str, message: str = INTERNAL_MESSAGE) -> ExecutionResult:
         "invalid_filter",
         "missing_scope",
         "unknown_scope",
+        "unknown_field",
+        "unknown_filter",
+        "scope_entity_conflict",
+        "scope_field_conflict",
     ],
 )
 def test_plan_rejection_is_never_forwarded_to_the_customer(reason: str, tmp_path) -> None:
@@ -357,6 +373,19 @@ def test_plan_rejection_is_never_forwarded_to_the_customer(reason: str, tmp_path
     assert reply.text == HANDOFF_TEXT
     assert reply.channel_used == "structured_no_evidence"
     assert "检索未完成" in reply.owner_notify_text
+
+
+def test_private_unknown_attachment_field_is_not_forwarded(tmp_path) -> None:
+    internal_message = "字段未注册：sku_unregistered_images"
+    engine = _wired_engine(tmp_path, _rejected("unknown_field", internal_message))
+    reply = engine.process_text_query(
+        _event("6970529180825 这个品的产品资料同步一份给我", chat_id="wxid_customer")
+    )
+    assert internal_message not in reply.text
+    assert "sku_unregistered_images" not in reply.text
+    assert reply.text == INSUFFICIENT_DATA_NO_HANDOFF_REPLY
+    assert reply.channel_used == "structured_no_evidence"
+    assert reply.owner_notify_text == ""
 
 
 def test_planner_clarify_question_is_still_forwarded(tmp_path) -> None:

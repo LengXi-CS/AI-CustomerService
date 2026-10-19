@@ -56,6 +56,7 @@ class WechatGroupPolicy:
     reply_to_staff_when_mentioned: bool = True
     native_quote_replies: bool = False
     associate_customer_demands: bool = False
+    conversation_quiet_window_seconds: int | None = None
 
     @classmethod
     def from_mapping(cls, value: Any) -> WechatGroupPolicy:
@@ -71,6 +72,12 @@ class WechatGroupPolicy:
         service_ids = _string_tuple(value.get("customer_service_ids"))
         if owner_id and owner_id not in service_ids:
             service_ids = (owner_id, *service_ids)
+        wait_seconds = value.get("conversation_quiet_window_seconds")
+        if wait_seconds is not None and (
+            isinstance(wait_seconds, bool) or not isinstance(wait_seconds, int)
+            or not 0 <= wait_seconds <= 86400
+        ):
+            raise ValueError("group wait time must be an integer between 0 and 86400")
         return cls(
             group_id=group_id,
             group_name=_text(value.get("group_name")),
@@ -86,6 +93,7 @@ class WechatGroupPolicy:
             ),
             native_quote_replies=bool(value.get("native_quote_replies", False)),
             associate_customer_demands=bool(value.get("associate_customer_demands", False)),
+            conversation_quiet_window_seconds=wait_seconds,
         )
 
     def sender_role(self, sender_id: str) -> SenderRole:

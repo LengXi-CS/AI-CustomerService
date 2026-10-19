@@ -33,7 +33,7 @@ from fastgpt_assistant.orchestration.query_routing import (
 ROOM = "49195424680@chatroom"
 OWNER = "wxid_owner"
 CUSTOMER = "customer-a"
-SOOTHE = "收到收到，这个我记下了，马上同步给负责人看一下，您放心。"
+SOOTHE = "收到，您提到的这个情况我看到了。"
 
 
 # --------------------------------------------------------------------------- #
@@ -369,6 +369,101 @@ def test_soothe_falls_back_when_the_model_returns_nothing(tmp_path) -> None:
     reply = engine.process_text_query(_event("帮我改一下发票抬头"))
 
     assert reply.text == NON_STANDARD_SOOTHE_REPLY
+
+
+def test_soothe_receives_original_demand_supplements_and_quote_separately(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    original = "你好，最后一个酒精还是发60ml的吗，金额1.65？"
+    supplement = "采购说之前已经和你谈好了"
+    event = _event(original + "\n" + supplement)
+    event.customer_messages = (original, supplement)
+    event.quoted_msg_id = "original-quote"
+    event.quoted_text = "酒精规格和报价待确认"
+    captured = {}
+
+    def compose(user_query, *, history=None, task_input=None, allowed_actions=()):
+        captured.update(task=task_input, actions=allowed_actions, query=user_query)
+        return "收到，60ml酒精的规格和价格，这边帮您反馈核实。"
+
+    engine.model_client.compose_soothe_reply = compose
+    reply = engine.process_text_query(event)
+
+    assert captured["query"] == event.text
+    assert captured["task"].customer_messages == (original, supplement)
+    assert captured["task"].quoted_message_id == "original-quote"
+    assert captured["task"].quoted_text == event.quoted_text
+    assert captured["actions"] == ("反馈核实",)
+    assert reply.text == "收到，60ml酒精的规格和价格，这边帮您反馈核实。"
+    assert reply.owner_notify_text
+
+
+@pytest.mark.parametrize("handoff", ["disabled", "no_owner", "unconfigured", "private"])
+def test_soothe_disallows_handoff_wording_without_an_owner_notice(tmp_path, handoff) -> None:
+    engine = _engine(_plan(), tmp_path, owner_notify_enabled=handoff != "disabled")
+    event = _event("帮我改一下发票抬头")
+    if handoff == "no_owner":
+        engine.groups_config = WechatGroupsConfig.from_mapping({
+            "groups": [{"group_id": ROOM, "mode": "active"}],
+        })
+    elif handoff == "unconfigured":
+        event.chat_id = "unconfigured@chatroom"
+    elif handoff == "private":
+        event.chat_id = CUSTOMER
+        event.is_group = False
+    calls = []
+
+    def compose(user_query, *, history=None, task_input=None, allowed_actions=()):
+        calls.append(allowed_actions)
+        return "收到，发票抬头的修改我帮您反馈。"
+
+    engine.model_client.compose_soothe_reply = compose
+    reply = engine.process_text_query(event)
+    assert calls == [()]
+    assert reply.text == NON_STANDARD_SOOTHE_REPLY
+    assert reply.owner_notify_text == ""
+
+
+@pytest.mark.parametrize("wording", [
+    "收到，" + "我会认真关注您的需求" * 8,
+    "收到，已经帮您核实，60ml就是1.65元。",
+    "收到，已经发货了。",
+    "收到，已通知负责人。",
+    "收到，保证明天送达。",
+    "收到，我们加急处理。",
+    "收到，2小时内给您处理好。",
+    "收到，这边帮您反馈，有结果再同步。",
+    "请问您要修改哪个抬头？",
+    '{"reply":"收到"',
+])
+def test_invalid_soothe_wording_uses_a_short_acknowledgement(tmp_path, wording) -> None:
+    engine = _engine(_plan(), tmp_path)
+    engine.model_client.compose_soothe_reply = lambda **kwargs: wording
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+    assert reply.text == NON_STANDARD_SOOTHE_REPLY
+    assert reply.owner_notify_text
+
+
+def test_soothe_whitespace_is_normalized_without_cutting_a_sentence(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    engine.model_client.compose_soothe_reply = lambda **kwargs: "收到，\n发票抬头的修改我帮您反馈。"
+    reply = engine.process_text_query(_event("帮我改一下发票抬头"))
+    assert reply.text == "收到， 发票抬头的修改我帮您反馈。"
+
+
+def test_split_demands_do_not_inherit_other_demands_original_messages(tmp_path) -> None:
+    engine = _engine(_plan(), tmp_path)
+    demands = ["帮我修改发票抬头", "订单87662609290267请核实漏发"]
+    event = _event("\n".join(demands))
+    event.customer_messages = tuple(demands)
+    captured = []
+
+    def compose(user_query, *, history=None, task_input=None, allowed_actions=()):
+        captured.append((user_query, task_input.customer_messages))
+        return SOOTHE
+
+    engine.model_client.compose_soothe_reply = compose
+    engine.process_demand_bundle(event, demands)
+    assert captured == [(demand, (demand,)) for demand in demands]
 
 
 def test_non_standard_demand_queues_an_owner_reminder(tmp_path) -> None:

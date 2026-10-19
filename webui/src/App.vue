@@ -51,7 +51,7 @@ const modeTypes = { active: 'success', shadow: 'warning', disabled: 'info' } as 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function blankGroup(): GroupPolicy {
   return { group_id: '', group_name: '', mode: 'disabled', owner_id: '', customer_service_ids: [], bot_aliases: [],
-    require_customer_mention: true, allow_images: true, allow_files: true, reply_to_staff_when_mentioned: true, native_quote_replies: false, associate_customer_demands: false }
+    require_customer_mention: true, allow_images: true, allow_files: true, reply_to_staff_when_mentioned: true, native_quote_replies: false, associate_customer_demands: false, conversation_quiet_window_seconds: null }
 }
 const form = reactive<GroupPolicy>(blankGroup())
 const rules: FormRules = {
@@ -97,7 +97,7 @@ const changes = computed(() => {
   if (globalEnabled.value !== snapshot.value.global_enabled)
     changes.push({ label: '全局群处理', detail: globalEnabled.value ? '关闭 → 开启' : '开启 → 关闭', kind: '开关' })
   const labels: Record<string, string> = { group_name: '群名称', mode: '运行模式', owner_id: '负责人', customer_service_ids: '客服名单',
-    bot_aliases: '机器人昵称', require_customer_mention: '客户必须 @', allow_images: '接收图片', allow_files: '接收文件', reply_to_staff_when_mentioned: '回复客服 @', native_quote_replies: '引用原问题回复', associate_customer_demands: '同一事项只回复一次' }
+    bot_aliases: '机器人昵称', require_customer_mention: '客户必须 @', allow_images: '接收图片', allow_files: '接收文件', reply_to_staff_when_mentioned: '回复客服 @', native_quote_replies: '引用原问题回复', associate_customer_demands: '同一事项只回复一次', conversation_quiet_window_seconds: '客户发言后等待时间' }
   for (const group of groups.value) {
     const previous = snapshot.value.groups.find((g) => g.group_id === group.group_id)
     if (!previous) changes.push({ label: group.group_name || group.group_id, detail: `新增群 · ${modes[group.mode]}`, kind: '新增' })
@@ -105,7 +105,7 @@ const changes = computed(() => {
       const fields = Object.keys(labels).filter((key) => JSON.stringify(previous[key as keyof GroupPolicy]) !== JSON.stringify(group[key as keyof GroupPolicy]))
       if (fields.length) changes.push({ label: group.group_name || group.group_id,
         detail: fields.map((key) => {
-          const render = (value: unknown) => typeof value === 'boolean' ? (value ? '开启' : '关闭')
+          const render = (value: unknown) => value == null ? '跟随默认' : typeof value === 'boolean' ? (value ? '开启' : '关闭')
             : Array.isArray(value) ? (value.join('、') || '空')
             : key === 'mode' ? modes[value as keyof typeof modes] : (String(value) || '空')
           return `${labels[key]}：${render(previous[key as keyof GroupPolicy])} → ${render(group[key as keyof GroupPolicy])}`
@@ -253,7 +253,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventUnload))
       <RuntimeStatus v-if="statusVisited" v-show="page === 'status'" :active="page === 'status'" @navigate="changePage" @unauthorized="authenticated = false; csrf = ''" />
       <ConfigHistory v-if="historyVisited" v-show="page === 'history'" :active="page === 'history'" :csrf="csrf" :has-drafts="anyDirty" @busy="historyBusy = $event" @restored="configurationRestored" @unauthorized="authenticated = false; csrf = ''" />
       <ChatArchive v-if="chatVisited" v-show="page === 'chats'" :active="page === 'chats'" :csrf="csrf" @unauthorized="authenticated = false; csrf = ''" />
-      <ReplyPolicy v-if="policyVisited" v-show="page === 'reply'" :csrf="csrf" @dirty="policyDirty = $event" @busy="policyBusy = $event" @unauthorized="authenticated = false; csrf = ''" />
+      <ReplyPolicy v-if="policyVisited" v-show="page === 'reply'" :csrf="csrf" @dirty="policyDirty = $event" @busy="policyBusy = $event" @groups-saved="!dirty && load()" @unauthorized="authenticated = false; csrf = ''" />
       <Connections v-if="connectionVisited" v-show="page === 'connections'" :csrf="csrf" @dirty="connectionDirty = $event" @busy="connectionBusy = $event" @unauthorized="authenticated = false; csrf = ''" />
       <div v-show="page === 'groups'" class="content">
         <div class="page-heading"><div><span class="eyebrow">GROUP MANAGEMENT</span><h1>客户群管理</h1><p>为每个客户群设置机器人参与方式与团队协作规则。</p></div><el-button type="primary" :icon="Plus" size="large" :disabled="!snapshot || loading || saving" @click="editGroup()">添加客户群</el-button></div>

@@ -12,9 +12,7 @@ RouteKind = Literal["normal", "clarify", "human", "silent", "soothe"]
 _HUMAN_ASSIST_REPLY = "我暂时无法准确确认您的需求，请稍等。"
 
 # 非标准需求只安抚，不反问。澄清属于标准需求，见 decide_query_route 的说明。
-NON_STANDARD_SOOTHE_REPLY = (
-    "收到，您反馈的情况我已经记录下来了，会同步给负责人尽快跟进，感谢您的耐心等待。"
-)
+NON_STANDARD_SOOTHE_REPLY = "收到，您反馈的情况我看到了。"
 
 
 @dataclass(frozen=True, slots=True)

@@ -103,6 +103,7 @@ def test_delayed_quote_survives_engine_restart_and_archives_platform_receipt(tmp
     key = generate_payload_vault_key()
     original = engine_for(tmp_path, key)
     event = original.parse_gewe_callback(callback())
+    event.raw_payload["received_at"] = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
     receipt = original.record_conversation_event(event)
     assert original.persist_pending_group_event(event, event_id=receipt.event_id)
     sent = []
@@ -113,7 +114,7 @@ def test_delayed_quote_survives_engine_restart_and_archives_platform_receipt(tmp
 
     restarted = engine_for(tmp_path, key, transport=transport, channel=channel)
     task = restarted.conversation_state.claim_ready_tasks(
-        now=datetime.now(UTC) + timedelta(minutes=31), quiet_window_seconds=1800
+        now=datetime.now(UTC), quiet_window_seconds=1800
     )[0]
     restarted.process_conversation_task(task)
     restarted.wechat.close()

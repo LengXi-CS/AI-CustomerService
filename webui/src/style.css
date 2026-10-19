@@ -1266,6 +1266,56 @@ h1,h2,h3,p {
 .runtime-status-label {
   margin-top: 20px;
 }
+.runtime-docker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.runtime-docker-grid article {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--hs-line);
+  border-radius: 8px;
+}
+.runtime-docker-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.runtime-docker-title strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.runtime-docker-grid p,.runtime-docker-grid dl {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--hs-muted);
+}
+.runtime-docker-grid dl>div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.runtime-docker-grid dt {
+  flex-shrink: 0;
+}
+.runtime-docker-grid dd {
+  margin: 0;
+  color: var(--hs-body);
+  text-align: right;
+}
+.runtime-docker-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--hs-muted);
+}
 .runtime-overview .runtime-duration {
   font-size: 24px;
 }
@@ -1410,6 +1460,10 @@ h1,h2,h3,p {
   }
 }
 @media (max-width:760px) {
+  .runtime-docker-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
   .runtime-checks,.runtime-scopes {
     grid-template-columns: 1fr;
   }
@@ -2193,3 +2247,11 @@ h1,h2,h3,p {
     display: none;
   }
 }
+/* Per-group customer reply wait settings. */
+.group-wait-search { max-width: 420px; margin: 14px 0; }
+.group-wait-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.group-wait-name { display: grid; gap: 5px; min-width: 0; }
+.group-wait-name strong { overflow-wrap: anywhere; }
+.group-wait-name small { color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
+.group-wait-controls { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+@media (max-width: 760px) { .group-wait-row { align-items: flex-start; flex-direction: column; gap: 10px; } .group-wait-controls { flex-wrap: wrap; } }
