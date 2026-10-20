@@ -92,7 +92,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_webui.ps1
 
 ### 2. 配置数据与接入
 
-在项目根目录创建 `.env`，根据实际部署填写以下配置。完整字段及取值方式见 [配置项速查](docs/配置项速查.md)。
+首次部署时，在项目根目录复制 [环境变量模板](.env.example)，再根据实际部署填写 `.env` 中的凭证、地址和保险库密钥；已有 `.env` 时请勿覆盖。完整字段及取值方式见 [配置项速查](docs/配置项速查.md)。
+
+```powershell
+Copy-Item .env.example .env
+```
 
 | 配置范围 | 主要内容 |
 |---|---|
